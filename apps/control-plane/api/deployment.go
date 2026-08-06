@@ -639,6 +639,17 @@ var deploymentCatalogue = []catalogueEntry{
 		ReaderFile: cpMain, ReaderFunc: "main",
 	},
 
+	{
+		Name: "PALAI_INBOUND_TOLERANCE", Group: "egress", Kind: kindValue, Default: "5m — the §21.5 replay window, applied for an unset or non-positive duration",
+		Effect: "The REPLAY WINDOW on a signed inbound webhook: how far a request's timestamp may be from this " +
+			"clock before the signature is refused as stale (`ErrStaleTimestamp`, verified BEFORE anything is " +
+			"persisted, so a stale request creates nothing). It is a security bound and not pacing — widening " +
+			"it lengthens exactly how long a captured request stays replayable, and narrowing it below real " +
+			"clock skew turns legitimate deliveries into authentication failures.",
+		Mutability: mutabilityBringUp, ChangeWith: changeCP,
+		ReaderFile: cpMain, ReaderFunc: "main",
+	},
+
 	// --- where a shell command runs, which is a security posture rather than a feature ---------------
 	{
 		Name: "PALAI_SANDBOX_IMAGE", Group: "shell", Kind: kindValue, Default: "none — there is no shell tool; a shell call fails cleanly rather than escaping",
@@ -934,8 +945,8 @@ var uncataloguedSettings = func() map[string]string {
 			[]string{"PALAI_TRIGGER_MAPPED_GRACE", "PALAI_TRIGGER_RECONCILE_BATCH", "PALAI_TRIGGER_RECONCILE_TICK"}},
 		{"MCP client sweep and dial timeout. The boundary of this family — PALAI_MCP_ALLOW_PRIVATE — was catalogued on 2026-08-06 and left this list; what remains is pacing.",
 			[]string{"PALAI_MCP_SWEEP_GRACE", "PALAI_MCP_SWEEP_INTERVAL", "PALAI_MCP_TIMEOUT"}},
-		{"Inbound intake bounds: backlog, in-flight ceiling, raw retention and clock tolerance.",
-			[]string{"PALAI_INBOUND_BACKLOG_MAX", "PALAI_INBOUND_MAX_INFLIGHT", "PALAI_INBOUND_RAW_TTL", "PALAI_INBOUND_TOLERANCE"}},
+		{"Inbound intake bounds: backlog, in-flight ceiling and raw retention. The security bound of this family — PALAI_INBOUND_TOLERANCE, the replay window — was catalogued on 2026-08-06 and left this list.",
+			[]string{"PALAI_INBOUND_BACKLOG_MAX", "PALAI_INBOUND_MAX_INFLIGHT", "PALAI_INBOUND_RAW_TTL"}},
 		{"Artifact garbage collection cadence and the grace an artifact gets before it is eligible.",
 			[]string{"PALAI_ARTIFACT_GC_GRACE", "PALAI_ARTIFACT_GC_INTERVAL"}},
 		{"Durable queue and schedule pacing.",
@@ -998,6 +1009,10 @@ var nonDesiredReason = map[string]string{
 		"with the workspace mounted. Choosing it is a supply-chain decision made at install time, not a setting.",
 
 	// --- what this deployment may DIAL ---------------------------------------------------------------
+	"PALAI_INBOUND_TOLERANCE": "it is the window a captured request stays replayable in. A form that widened " +
+		"it would extend that window for every trigger in the deployment at once, and the change would look " +
+		"like a tuning edit rather than what it is. It is also read ONCE, at bring-up, so a written value " +
+		"would not be the one in force until a restart.",
 	"PALAI_SLACK_API_BASE_URL": "it names the host every bot's sealed token is spent against. The grant " +
 		"route refuses an `api_base` on the wire for exactly this reason, in its own words — accepting one " +
 		"\"would let a caller aim a bot's sealed credential at a host of its choosing\" — and a settings form " +

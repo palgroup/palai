@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -616,4 +617,118 @@ func isSecretFilePrefix(name string) bool {
 		}
 	}
 	return false
+}
+
+// callSiteDefault matches the two readers that carry their fallback AT the call site, which is the only
+// place a default is expressed as a value rather than as prose.
+var callSiteDefault = regexp.MustCompile(`env(?:IntDefault|DurationOr)\("(PALAI_[A-Z0-9_]+)",\s*([^)]+)\)`)
+
+// namedConstant resolves `pkg.Name` to the expression its declaration assigns, so a default written as a
+// constant is still comparable. It returns "" when the name is not a simple package-qualified constant.
+func namedConstant(t *testing.T, expr string) string {
+	t.Helper()
+	if !strings.Contains(expr, ".") || strings.ContainsAny(expr, "*+ ") {
+		return ""
+	}
+	name := expr[strings.LastIndex(expr, ".")+1:]
+	// ‼️ POSIX ERE, NOT PERL: git grep -E has no `\s`, and the first draft's `^\s*` matched nothing at all —
+	// which returned "" and reported the catalogue wrong while the PROPERTY held.
+	cmd := exec.Command("git", "grep", "-h", "-E", "^[[:space:]]*(const |var )?"+name+"[[:space:]]*=")
+	// ‼️ FROM THE REPO ROOT. `git grep` searches the CURRENT DIRECTORY's subtree, and this test runs in
+	// apps/control-plane/api while the constants it resolves live under internal/. The third draft found
+	// nothing for that reason alone and reported the catalogue wrong — a sweep that looks in the wrong place
+	// returns exactly what a sweep that found nothing returns.
+	cmd.Dir = repoRootFromTest(t)
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		// ‼️ AND COMMENTS ARE SKIPPED, because the second draft resolved the constant from THIS FILE's own
+		// prose about it. A resolver that reads the sentence explaining a value instead of the value is the
+		// same defect as a guard that checks a claim instead of the world.
+		if trimmed := strings.TrimSpace(line); strings.HasPrefix(trimmed, "//") {
+			continue
+		}
+		if _, rhs, ok := strings.Cut(line, "="); ok {
+			return strings.TrimSpace(rhs)
+		}
+	}
+	return ""
+}
+
+// renderDefault turns a Go duration/int expression into the spelling a human writes: `2*time.Minute` ->
+// "2m", `time.Hour` -> "1h", `256` -> "256".
+func renderDefault(expr string) string {
+	// Spaces removed first: a call site writes `2*time.Minute` and a declaration writes `5 * time.Minute`,
+	// and the same value must render the same way from either.
+	expr = strings.ReplaceAll(strings.TrimSpace(expr), " ", "")
+	units := []struct {
+		suffix string
+		short  string
+	}{{"time.Hour", "h"}, {"time.Minute", "m"}, {"time.Second", "s"}}
+	for _, u := range units {
+		if expr == u.suffix {
+			return "1" + u.short
+		}
+		if n, ok := strings.CutSuffix(expr, "*"+u.suffix); ok {
+			return strings.TrimSpace(n) + u.short
+		}
+	}
+	return expr
+}
+
+// TestACataloguedDefaultIsTheOneTheCodeApplies binds the catalogue's `Default` PROSE to the value the
+// composition root actually falls back to.
+//
+// ‼️ NOTHING MEASURED THAT FIELD, AND IT IS THE ONE AN OPERATOR RELIES ON. Measured 2026-08-06 by writing
+// a deliberate lie — "45m" for a five-minute replay window — and running the whole package: green. Every
+// other guard here checks a name, a reader, a plane or a refusal; the sentence telling somebody what their
+// deployment does when they set NOTHING was free prose.
+//
+// ‼️ AND ITS COVERAGE IS A CEILING, STATED RATHER THAN IMPLIED. Only a default expressed at the call site
+// (`envIntDefault`, `envDurationOr`) is comparable — 19 reads today. A default that lives inside the
+// consumer (`TriggerStore.tolerance()` returns 5m for an unset value) is NOT checked by this, and a
+// catalogue entry for one of those is still prose somebody has to verify by hand. The count below is what
+// keeps that honest: if this stops covering anything, it fails instead of reporting clean.
+func TestACataloguedDefaultIsTheOneTheCodeApplies(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join(repoRootFromTest(t), "apps/control-plane/cmd/palai-control-plane/main.go"))
+	if err != nil {
+		t.Fatalf("read the composition root: %v", err)
+	}
+	applied := map[string]string{}
+	for _, m := range callSiteDefault.FindAllStringSubmatch(string(body), -1) {
+		applied[m[1]] = strings.TrimSpace(m[2])
+	}
+	if len(applied) == 0 {
+		t.Fatal("no call-site defaults were parsed — the pattern has stopped matching and every comparison " +
+			"below would be skipped, which reads exactly like a catalogue whose defaults all agree")
+	}
+
+	checked := 0
+	for _, entry := range deploymentCatalogue {
+		expr, ok := applied[entry.Name]
+		if !ok {
+			continue
+		}
+		if resolved := namedConstant(t, expr); resolved != "" {
+			expr = resolved
+		}
+		want := renderDefault(expr)
+		checked++
+		// ‼️ THE LEADING TOKEN, NOT A SUBSTRING. `strings.Contains("45m", "5m")` is TRUE, so the first draft
+		// of this guard passed the exact lie it was written to catch — measured, not reasoned about. This
+		// tree already records defeated membership comparisons as a class; a defeated one in a GUARD says
+		// nothing at all, forever. The field's convention is "<value> — prose", so the value is field one.
+		fields := strings.Fields(entry.Default)
+		if len(fields) == 0 || fields[0] != want {
+			t.Errorf("%s: the catalogue says its default is %q, and the composition root falls back to %s. "+
+				"An operator reads that field to know what their deployment does when they set nothing",
+				entry.Name, entry.Default, want)
+		}
+	}
+	if checked == 0 {
+		t.Fatalf("this guard compared NOTHING: %d call-site defaults were parsed and none of them names a "+
+			"catalogued setting. It is not protecting the field it was written for", len(applied))
+	}
 }
