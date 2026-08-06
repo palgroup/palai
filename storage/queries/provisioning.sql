@@ -14,7 +14,19 @@
 INSERT INTO principals (id, project_id, kind) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING;
 
 -- name: InsertProject
-INSERT INTO projects (id, display_name) VALUES ($1, $2) ON CONFLICT DO NOTHING;
+-- ‼️ THE POLICY IS WRITTEN AT BIRTH, AND IT USED TO BE LEFT NULL. A project created through this
+-- statement had no `default_tools`, so its agents were offered NOTHING — and a model with no tools does
+-- not refuse, it NARRATES. Measured 2026-08-06 on a project Palai Cloud had just opened for a customer:
+-- asked to list the repository's Swift files with the shell tool, the run made ZERO tool calls, reached
+-- `completed`, and answered "I will use the shell tool to list the Swift files. Executing the command
+-- now. ```bash ls *.swift``` Please hold on while I gather the res…". Every layer reported success.
+--
+-- Only `palai up` granted the baseline, at the CLI, to the one project it had made — so a self-hosted
+-- operator got a working agent and every project opened over the API (which is the only way Cloud opens
+-- one) got a mute one. The grant belongs where a tenant is born, not in one of the two paths that reach
+-- the birth: `seedTenant` now passes toolset.Default(), and the CLI's own grant stands down when a
+-- policy already names tools, which after this it always does.
+INSERT INTO projects (id, display_name, config_policy) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING;
 
 -- name: InsertAPIKey
 INSERT INTO api_keys (id, project_id, principal_id, key_hash, scopes, expires_at)

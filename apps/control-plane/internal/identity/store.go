@@ -33,6 +33,7 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
 	"github.com/palgroup/palai/apps/control-plane/internal/fleet"
 	"github.com/palgroup/palai/packages/coordinator"
+	"github.com/palgroup/palai/packages/toolset"
 	"github.com/palgroup/palai/storage"
 )
 
@@ -92,12 +93,27 @@ func (s *Store) systemTx(ctx context.Context, body func(context.Context, pgx.Tx)
 	return nil
 }
 
-// seedTenant inserts the four rows a tenant is born with: its project, a service principal, an admin API
-// key (hash only — the bearer value never persists), and its default runner pool. Every statement is
-// ON CONFLICT DO NOTHING, so a re-run against an already-seeded id is a clean no-op (the bootstrap re-boot
-// path). Both creation paths — the bootstrap and POST /v1/projects — are now exactly these four rows.
+// birthPolicy is the config_policy every tenant is born with: the canonical tool baseline and nothing
+// else.
+//
+// ‼️ IT IS toolset.Default() AND NEVER A LIST WRITTEN HERE. There is one canonical baseline and this is a
+// second reader of it, not a second copy — a list spelled out in this file would drift from the one the
+// broker registers, and the symptom of that drift is a tool a project is granted and the plane cannot
+// give, which the ceiling silently intersects away.
+//
+// A MAP, MARSHALLED, RATHER THAN A HAND-WRITTEN JSON STRING: the value has to survive being read back by
+// UpdateProjectPolicy's strict decoder, and a literal is where a stray comma or an unescaped name gets in.
+func birthPolicy() []byte {
+	return mustJSON(map[string]any{"default_tools": toolset.Default()})
+}
+
+// seedTenant inserts the four rows a tenant is born with: its project (carrying birthPolicy), a service
+// principal, an admin API key (hash only — the bearer value never persists), and its default runner pool.
+// Every statement is ON CONFLICT DO NOTHING, so a re-run against an already-seeded id is a clean no-op
+// (the bootstrap re-boot path). Both creation paths — the bootstrap and POST /v1/projects — are now
+// exactly these four rows.
 func seedTenant(ctx context.Context, tx pgx.Tx, seed tenantSeed) error {
-	if _, err := tx.Exec(ctx, storage.Query("InsertProject"), seed.projectID, seed.projectName); err != nil {
+	if _, err := tx.Exec(ctx, storage.Query("InsertProject"), seed.projectID, seed.projectName, birthPolicy()); err != nil {
 		return fmt.Errorf("insert project: %w", err)
 	}
 	if _, err := tx.Exec(ctx, storage.Query("InsertPrincipal"), seed.principalID, seed.projectID, "service"); err != nil {
@@ -230,7 +246,10 @@ func (s *Store) CreateProject(ctx context.Context, scope middleware.Scope, body 
 	out := projectCreated{
 		projectView: projectView{
 			ID: seed.projectID, Object: "project",
-			DisplayName: in.DisplayName, ConfigPolicy: json.RawMessage("null"),
+			// The policy the row was actually born with, not `null`. A create that reported an empty
+			// policy while the database held the tool baseline would make the caller's first read
+			// disagree with its own creation.
+			DisplayName: in.DisplayName, ConfigPolicy: birthPolicy(),
 		},
 		AdminAPIKey: apiKeyView{
 			ID: seed.keyID, Object: "api_key",
