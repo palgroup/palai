@@ -212,6 +212,23 @@ func Bootstrap(envFile string, native bool) error {
 	}
 
 	// [5/5] The point of the whole command.
+	// WHETHER ANY AGENT ON THIS STACK CAN CALL A TOOL AT ALL. A revision's tool list is a CEILING
+	// intersected with the project's default_tools baseline, so a project whose config_policy is NULL —
+	// which is every project until somebody sets one — resolves EVERY agent to the empty set. The runs
+	// complete. They answer in one step. They call nothing, and no layer says why.
+	//
+	// ‼️ IT RUNS BEFORE THE PROOF, AND IT USED TO RUN AFTER. The sentence that stood here said the grant
+	// "is configuration and not a precondition of the proof", which is true of the PROOF and was the wrong
+	// thing to reason about: the proof can FAIL, and a failed proof returns from this function. So on
+	// every stack whose round trip did not pass — which is every stack with no machine enrolled yet, the
+	// ordinary state of a fresh Mac fleet — the baseline was never written, and every agent on it
+	// resolved to the empty tool set for good. Measured 2026-08-06 on a native bring-up: `up` exited at
+	// [5/5], `prj_local.default_tools` was NULL, and the iOS demo's agent narrated "I will list the Swift
+	// files" and called nothing. Configuration that only lands when a proof passes is configuration a
+	// broken stack can never repair by being fixed.
+	if granted := api.grantDefaultToolBaseline(); granted != "" {
+		fmt.Fprintf(os.Stderr, "        tools     %s\n", granted)
+	}
 	fmt.Fprintln(os.Stderr, "[5/5] proof     one real single-step run...")
 	rt, err := roundTripProof(api)
 	if err != nil {
@@ -250,17 +267,6 @@ func Bootstrap(envFile string, native bool) error {
 	// on purpose: by here the proof has happened, so the operator is being told which credential produced
 	// the `PROVEN LIVE` line they are about to read.
 	warns = appendWarn(warns, modelAuthorityWarning(api, get))
-	// WHETHER ANY AGENT ON THIS STACK CAN CALL A TOOL AT ALL. A revision's tool list is a CEILING
-	// intersected with the project's default_tools baseline, so a project whose config_policy is NULL —
-	// which is every project until somebody sets one — resolves EVERY agent to the empty set. The runs
-	// complete. They answer in one step. They call nothing, and no layer says why.
-	//
-	// SO THE BRING-UP NOW GRANTS THAT BASELINE rather than only naming its absence. It runs here, after the
-	// round trip has proven the stack, because it is configuration and not a precondition of the proof —
-	// the single-step run above calls no tools either way.
-	if granted := api.grantDefaultToolBaseline(); granted != "" {
-		fmt.Fprintf(os.Stderr, "        tools     %s\n", granted)
-	}
 	// THE WARNING SURVIVES THE WRITE, and it is not belt-and-braces: it reads the server again, so it is
 	// the only thing that speaks when the grant above did NOT land. The grant stands down silently in
 	// three cases — the read failed, the PATCH failed, or the project already grants tools. When the
