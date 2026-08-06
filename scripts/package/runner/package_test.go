@@ -111,7 +111,10 @@ func TestPackageBuildsVerifiesAndIsDeterministic(t *testing.T) {
 
 	// The tarball carries exactly the host-package members.
 	members := tarMembers(t, tarball1)
-	for _, want := range []string{"palai-runner", "palai-runner.service", "palai-runner.sh", "runner.env.example", "runner-host.md"} {
+	// The DEVICE artifact's members. The binary is `palai` — the name install.sh extracts and the name a
+	// packaged agent is invoked by — and the systemd bridge rides along only because this is the linux
+	// build, for deployments that already run from an operator-edited /etc/palai/runner.env.
+	for _, want := range []string{"palai", "palai-runner.service", "palai-runner.sh", "runner.env.example", "runner-host.md"} {
 		if !members[want] {
 			t.Fatalf("tarball missing member %q (has %v)", want, members)
 		}

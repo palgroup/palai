@@ -22,12 +22,17 @@ set -euo pipefail
 
 VERSION="${VERSION:-0.1.0}"
 ARCH="${ARCH:-amd64}"
+# ‼️ THE OS IS A PARAMETER AND THE ARTIFACT IS NAMED FOR THE DEVICE CONTRACT. `install.sh` fetches
+# palai-<version>-<os>-<arch>.tar.gz and expects one binary called `palai` inside it (device plan T7b),
+# so this producer answers that name rather than the host-package one it used to. A Mac fleet cannot be
+# served by a builder that only knows linux.
+OS="${OS:-linux}"
 # Fixed mtime for every archive member (touch -t format) → reproducible tar.
 MTIME='202601010000.00'
 
 root="$(git rev-parse --show-toplevel)"
 out="${OUT:-$root/dist/runner-package}"
-pkg="palai-runner-host-${VERSION}-linux-${ARCH}"
+pkg="palai-${VERSION}-${OS}-${ARCH}"
 tarball="${pkg}.tar.gz"
 
 mkdir -p "$out"
@@ -37,20 +42,30 @@ trap 'rm -rf "$stage"' EXIT
 # GOPROXY=off + -mod=readonly (E18 T1): the compile is offline against the warmed, go.sum-pinned
 # module cache, which is what lets the release index claim hermeticity for the host package too. A
 # cold cache fails here ("module lookup disabled by GOPROXY=off") rather than fetching.
-echo "build: cross-compiling cmd/runner (linux/${ARCH})" >&2
-( cd "$root" && CGO_ENABLED=0 GOOS=linux GOARCH="$ARCH" GOPROXY=off GOFLAGS=-mod=readonly \
-	go build -trimpath -buildvcs=false -ldflags='-s -w' -o "$stage/palai-runner" ./cmd/runner )
+echo "build: cross-compiling cmd/runner (${OS}/${ARCH}) as palai" >&2
+( cd "$root" && CGO_ENABLED=0 GOOS="$OS" GOARCH="$ARCH" GOPROXY=off GOFLAGS=-mod=readonly \
+	go build -trimpath -buildvcs=false -ldflags='-s -w' -o "$stage/palai" ./cmd/runner )
 
 # Stage the package members FLAT (no subdirs, so tar member order is fully controlled).
 here="$root/scripts/package/runner"
-cp "$root/deploy/systemd/palai-runner.service" "$stage/palai-runner.service"
-cp "$here/palai-runner.sh"                       "$stage/palai-runner.sh"
-cp "$here/runner.env.example"                    "$stage/runner.env.example"
-cp "$root/docs/operations/runner-host.md"        "$stage/runner-host.md"
+cp "$root/docs/operations/runner-host.md" "$stage/runner-host.md"
+# ‼️ THE SYSTEMD BRIDGE IS LINUX-ONLY AND IS NOT WHAT A DEVICE USES. `palai enroll` writes and loads the
+# service itself on both platforms; these three ship for the deployments that already run from an
+# operator-edited /etc/palai/runner.env, which is the compatibility window §3.7 grants them. A darwin
+# archive carries none of it — a LaunchAgent is written by enrol, not copied from a tarball.
+if [ "$OS" = "linux" ]; then
+	cp "$root/deploy/systemd/palai-runner.service" "$stage/palai-runner.service"
+	cp "$here/palai-runner.sh"                     "$stage/palai-runner.sh"
+	cp "$here/runner.env.example"                  "$stage/runner.env.example"
+fi
 
 # Normalize perms then mtime (perms first — touch is last so nothing re-stamps it).
-chmod 0755 "$stage/palai-runner" "$stage/palai-runner.sh"
-chmod 0644 "$stage/palai-runner.service" "$stage/runner.env.example" "$stage/runner-host.md"
+chmod 0755 "$stage/palai"
+chmod 0644 "$stage/runner-host.md"
+if [ "$OS" = "linux" ]; then
+	chmod 0755 "$stage/palai-runner.sh"
+	chmod 0644 "$stage/palai-runner.service" "$stage/runner.env.example"
+fi
 find "$stage" -exec touch -t "$MTIME" {} +
 
 # Deterministic tar: sorted members, uid/gid 0, numeric owner; gzip -n drops the name+timestamp
@@ -68,6 +83,18 @@ members="$(cd "$stage" && find . -type f | sed 's|^\./||' | LC_ALL=C sort)"
 
 # sha256 manifest + detached signature.
 ( cd "$out" && sha256sum "$tarball" > "${tarball}.sha256" )
+
+# ‼️ AND THE MANIFEST install.sh READS, WHICH IS A DIFFERENT DOCUMENT FROM THE LINE ABOVE. `.sha256` is
+# per-artifact and travels beside it under a detached signature; `checksums.txt` covers every artifact of
+# one VERSION and is fetched as its own request, so a digest and the file it protects are never served by
+# one credential. Appending rather than overwriting is what lets a multi-arch build accumulate: each
+# OS/ARCH invocation adds its own line and re-running one replaces only that line.
+( cd "$out" \
+	&& touch checksums.txt \
+	&& grep -v " ${tarball}\$" checksums.txt > checksums.txt.next || true \
+	&& sha256sum "$tarball" >> checksums.txt.next \
+	&& LC_ALL=C sort -k2 checksums.txt.next > checksums.txt \
+	&& rm -f checksums.txt.next )
 
 keydir="$stage"
 if [ -n "${PALAI_RUNNER_SIGNING_KEY:-}" ]; then
