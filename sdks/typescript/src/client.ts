@@ -8,6 +8,7 @@ import { delay, fullJitterBackoff, type StreamTransport } from "./stream.ts";
 import { Responses } from "./resources/responses.ts";
 import { Sessions } from "./resources/sessions.ts";
 import { Agents } from "./resources/agents.ts";
+import { Approvals } from "./resources/approvals.ts";
 import { Artifacts } from "./resources/artifacts.ts";
 import { MCPConnections, RepositoryBindings, Tools, Triggers } from "./resources/reads.ts";
 import { SecretRefs } from "./resources/secret-refs.ts";
@@ -66,6 +67,9 @@ export class Palai implements StreamTransport {
   readonly responses: Responses;
   readonly sessions: Sessions;
   readonly agents: Agents;
+  // approvals is the human-in-the-loop surface: what is parked, and the answer. A program that starts runs
+  // has to be able to answer them, or a gated call sits until its TTL expires.
+  readonly approvals: Approvals;
   readonly artifacts: Artifacts;
   readonly repositoryBindings: RepositoryBindings;
   readonly tools: Tools;
@@ -104,6 +108,7 @@ export class Palai implements StreamTransport {
     this.responses = new Responses(this);
     this.sessions = new Sessions(this);
     this.agents = new Agents(this);
+    this.approvals = new Approvals(this);
     this.artifacts = new Artifacts(this);
     this.repositoryBindings = new RepositoryBindings(this);
     this.tools = new Tools(this);

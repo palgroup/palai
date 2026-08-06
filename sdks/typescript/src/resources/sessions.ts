@@ -102,6 +102,34 @@ export class Sessions {
     return result.body;
   }
 
+  // setAutoApprove arms (or disarms) this session's STANDING authorization, and returns the re-read
+  // session so the caller sees `auto_approve_set_by` — the principal the server stamped from the verified
+  // key, which is who every auto-decision will be recorded AS.
+  //
+  // ‼️ IT ANSWERS APPROVALS, IT DOES NOT SKIP THEM. The control plane still writes the approval row and
+  // still decides it through the same throat a human's POST uses, so the approvals list still shows what
+  // ran and the approver policy still applies. Armed or not, `approvals.list()` is the record.
+  //
+  // TWO FLAGS AND NEVER ONE. A gated TOOL call lands in the run's own workspace while a human watches; a
+  // PUBLICATION writes to somebody's repository and outlives the session. Omitting a field leaves it as it
+  // was, so arming tools does not quietly arm publications.
+  async setAutoApprove(
+    sessionID: string,
+    params: { tools?: boolean; publications?: boolean },
+    options: CallOptions = {},
+  ): Promise<Session> {
+    const body: Record<string, boolean> = {};
+    if (params.tools !== undefined) body.auto_approve_tools = params.tools;
+    if (params.publications !== undefined) body.auto_approve_publications = params.publications;
+    const result = await this.#client.request<Session>("PATCH", `/v1/sessions/${enc(sessionID)}`, {
+      body,
+      // Setting a standing flag to X twice leaves it X.
+      idempotent: true,
+      ...callArgs(options),
+    });
+    return result.body;
+  }
+
   // retrieve reads a session within the verified scope; an unknown or foreign id is a 404
   // (NotFoundError).
   async retrieve(sessionID: string, options: CallOptions = {}): Promise<Session> {

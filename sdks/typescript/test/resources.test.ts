@@ -272,3 +272,59 @@ test("the T4 list/get surfaces each page and get through the shared cursor", asy
   ]);
   for (const c of calls) assertAuthenticated(c);
 });
+
+// THE HUMAN-IN-THE-LOOP SURFACE. The routes shipped with the tool-approval phase and the SDK could not
+// reach any of them — measured 2026-08-06, `grep -rn approval src/` returned nothing outside the
+// generated types. A program driving Palai could start a run that parks on an approval and then had no
+// way to answer it: the run sat `in_progress` until its TTL expired, and only Slack or curl could decide.
+test("approvals.list reads what is parked", async () => {
+  const { fetch: f, calls } = recordingFetch(() =>
+    json(200, { object: "list", data: [{ id: "apr_1", object: "approval", request_hash: "h1" }] }),
+  );
+  const page = await newClient(f).approvals.list({ limit: 5 });
+  assert.equal(page.data[0]?.id, "apr_1");
+  assert.equal(calls[0]?.method, "GET");
+  assert.ok(calls[0]?.url.includes("/v1/approvals"));
+  assertAuthenticated(calls[0]!);
+});
+
+// APPROVE AND DENY ARE DIFFERENT URLS, not one call with a flag — the server splits them for the reason
+// pause/resume are split, and the SDK must not paper over that with a boolean nobody can see in a log.
+test("approvals.approve and deny hit their own routes and always carry the one-shot hash", async () => {
+  const { fetch: f, calls } = recordingFetch(() => json(200, { id: "apr_1", object: "approval.decision", decision: "approved" }));
+  const client = newClient(f);
+  await client.approvals.approve("apr_1", { requestHash: "h1" });
+  assert.ok(calls[0]?.url.endsWith("/v1/approvals/apr_1/approve"));
+  assert.equal(JSON.parse(calls[0]!.body!).request_hash, "h1");
+
+  await client.approvals.deny("apr_1", { requestHash: "h1", reason: "not that file, use testdata" });
+  assert.ok(calls[1]?.url.endsWith("/v1/approvals/apr_1/deny"));
+  const denied = JSON.parse(calls[1]!.body!);
+  assert.equal(denied.request_hash, "h1");
+  // The reason rides back to the MODEL verbatim: a denial with no reason is a wall, one with a reason is
+  // the next instruction. An SDK that dropped it would turn every refusal into the first kind.
+  assert.equal(denied.reason, "not that file, use testdata");
+});
+
+// THE THIRD ANSWER: standing authorization. It lives on the SESSION rather than beside approve/deny,
+// because it is a decision about a sitting rather than about one call — and it ANSWERS approvals rather
+// than skipping them, so `approvals.list` remains the record either way.
+test("sessions.setAutoApprove arms each flag independently and leaves the other alone", async () => {
+  const { fetch: f, calls } = recordingFetch(() =>
+    json(200, { id: "ses_1", object: "session", auto_approve_tools: true, auto_approve_set_by: "key:key_1" }),
+  );
+  const client = newClient(f);
+  const armed = await client.sessions.setAutoApprove("ses_1", { tools: true });
+  assert.equal(armed.auto_approve_set_by, "key:key_1");
+  assert.equal(calls[0]?.method, "PATCH");
+  const body = JSON.parse(calls[0]!.body!);
+  assert.equal(body.auto_approve_tools, true);
+  // A gated TOOL call lands in the run's own workspace while a human watches; a PUBLICATION writes to
+  // somebody's repository and outlives the session. Arming one must never arm the other.
+  assert.equal("auto_approve_publications" in body, false);
+
+  await client.sessions.setAutoApprove("ses_1", { publications: false });
+  const second = JSON.parse(calls[1]!.body!);
+  assert.equal(second.auto_approve_publications, false);
+  assert.equal("auto_approve_tools" in second, false);
+});

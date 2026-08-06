@@ -16,6 +16,8 @@ export { Sessions, SessionCommands } from "./resources/sessions.ts";
 export type { SteerParams, InterruptParams, SessionCreateParams } from "./resources/sessions.ts";
 export { Agents } from "./resources/agents.ts";
 export type { AgentProfile, AgentRevision } from "./resources/agents.ts";
+export { Approvals } from "./resources/approvals.ts";
+export type { PendingApproval, ApprovalDecisionResult, ApproveParams, DenyParams } from "./resources/approvals.ts";
 export { Artifacts } from "./resources/artifacts.ts";
 export type { Artifact, ArtifactDownload } from "./resources/artifacts.ts";
 export { RepositoryBindings, Tools, MCPConnections, Triggers } from "./resources/reads.ts";
