@@ -11,4 +11,5 @@ type ModelRouteRevision struct {
 	ResolvedByDispatch bool     `json:"resolved_by_dispatch,omitempty"`
 	Revision           int      `json:"revision,omitempty"`
 	RouteID            OpaqueID `json:"route_id"`
+	Thinking           string   `json:"thinking,omitempty"`
 }

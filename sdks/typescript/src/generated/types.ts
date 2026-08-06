@@ -173,6 +173,7 @@ export interface ModelRouteRevision {
   resolved_by_dispatch?: boolean;
   revision?: number;
   route_id: OpaqueId;
+  thinking?: string;
 }
 
 export interface Page {
