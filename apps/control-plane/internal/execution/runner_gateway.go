@@ -1582,17 +1582,32 @@ func (g *RunnerGateway) removeSession(pr *pendingRunner) {
 // still keyed by its owner and an attempt of another tenant still cannot name it. What changed is only
 // that a pool whose row says "no owner" is one BOTH sides agree has no owner.
 //
-// A read failure returns the caller's own tenant, which is the pre-free-fleet behaviour exactly: it can
-// only ever narrow the rendezvous, never widen it.
+// ‼️ IT WIDENS FOR A FREE POOL AND FOR NOTHING ELSE, and the first version of this function got that
+// wrong in the most expensive possible way. It returned the pool's owner UNCONDITIONALLY, so an attempt
+// naming ANOTHER TENANT'S pool resolved to that tenant's rendezvous and met their machines —
+// TestPlacementNeverOffersOneTenantsAttemptToAnothersRunner caught it on the component tier, which
+// `make verify` does not run. The tenant in queueKey was the ONLY thing making a cross-tenant offer
+// unreachable, and resolving both sides from the pool row handed it away.
+//
+// So a PRIVATE pool returns the caller's own tenant, unchanged from before the free fleet existed. That
+// is not a weaker check than "the pool's owner": a machine inherits its pool's project at enrolment, so
+// for a private pool the machine's side IS the owner, and the two meet exactly when the caller is the
+// owner. An attempt that names somebody else's pool keeps its own tenant, its key matches no queue, and
+// it is unreachable rather than refused — which is the property queueKey was built for.
+//
+// A read failure also returns the caller's own tenant: it can only ever narrow the rendezvous, never
+// widen it.
 func (g *RunnerGateway) rendezvousTenant(ctx context.Context, attempt AttemptDescriptor) coordinator.Tenant {
 	if g.registry == nil || attempt.PoolID == "" {
 		return attempt.Tenant
 	}
 	pool, found, err := g.registry.Pool(ctx, attempt.PoolID)
-	if err != nil || !found {
+	if err != nil || !found || pool.Project != "" {
 		return attempt.Tenant
 	}
-	return coordinator.Tenant{Project: pool.Project}
+	// The PLANE's pool: every project may be placed onto it, and the machines in it carry no project
+	// either — so both sides meet on the empty tenant.
+	return coordinator.Tenant{}
 }
 
 // queueForAttempt is the DIAL SIDE of the rendezvous: the queue this attempt waits on, and the tenant

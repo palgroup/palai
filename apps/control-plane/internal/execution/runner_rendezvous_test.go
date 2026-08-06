@@ -77,7 +77,6 @@ func rendezvousGateway(private, free string) *RunnerGateway {
 func TestTheDialAsksTheRendezVOUSTheMachineJoined(t *testing.T) {
 	const private, free = "pool_private", "pool_free"
 	g := rendezvousGateway(private, free)
-	caller := coordinator.Tenant{Project: "prj_caller"}
 
 	for _, tc := range []struct {
 		name string
@@ -87,13 +86,20 @@ func TestTheDialAsksTheRendezVOUSTheMachineJoined(t *testing.T) {
 		machineTenant string
 	}{
 		{"the plane's pool", free, ""},
-		{"a private pool", private, rendezvousOwnerProject},
+		// The owner's OWN attempt on its own pool: the one case where a private pool's two sides meet.
+		{"a private pool, asked by its owner", private, rendezvousOwnerProject},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// The MACHINE side first, exactly as handleConnect does it: the project on its registry row.
 			joined := g.queueFor(coordinator.Tenant{Project: tc.machineTenant}, tc.pool)
 			// Then the DIAL side, through the method Dial itself calls. Identity, not equality of two
 			// recomputed strings: this is the same object or the two never meet.
+			// The caller is the pool's owner for a private pool, and anybody for the plane's — which is
+			// the whole difference the rendezvous encodes.
+			caller := coordinator.Tenant{Project: tc.machineTenant}
+			if tc.pool == free {
+				caller = coordinator.Tenant{Project: "prj_any_tenant"}
+			}
 			asked, queue := g.queueForAttempt(context.Background(), AttemptDescriptor{Tenant: caller, PoolID: tc.pool})
 			if queue != joined {
 				t.Fatalf("the attempt asks rendezvous %q and the machine joined %q — one pool, two queues, "+
@@ -105,22 +111,40 @@ func TestTheDialAsksTheRendezVOUSTheMachineJoined(t *testing.T) {
 	}
 }
 
-// TestAPrivatePoolStillBelongsToItsOwner is the half that makes the test above non-vacuous. A
-// rendezvousTenant that simply returned the empty tenant for everything would satisfy every assertion up
-// there — and would put every tenant's attempts into ONE queue, which is the cross-tenant offer queueKey
-// exists to make unreachable.
-func TestAPrivatePoolStillBelongsToItsOwner(t *testing.T) {
+// TestAStrangerNamingAPrivatePoolMeetsNobody REPLACES A TEST THAT ASSERTED THE BUG, and the swap is the
+// most expensive thing in this file.
+//
+// It was TestAPrivatePoolStillBelongsToItsOwner, and it demanded that a STRANGER's attempt naming a
+// private pool resolve to that pool's OWNER. Read as a sentence about queue keys that sounds right; read
+// as a sentence about tenancy it says "put this tenant's attempt in the queue another tenant's machines
+// are parked in". The implementation obliged, and
+// TestPlacementNeverOffersOneTenantsAttemptToAnothersRunner — on the component tier, which `make verify`
+// does not run — caught tenant B's attempt being handed tenant A's machine.
+//
+// The tenant half of queueKey was the ONLY thing making a cross-tenant offer UNREACHABLE rather than
+// refused. Resolving both sides from the pool row handed that away, and a guard written from the same
+// misunderstanding could not see it.
+//
+// The property, stated so it cannot be misread: a rendezvous WIDENS for a free pool and for nothing
+// else. A private pool leaves the caller's own tenant in the key, so a stranger's attempt matches no
+// queue at all.
+func TestAStrangerNamingAPrivatePoolMeetsNobody(t *testing.T) {
 	const private, free = "pool_private", "pool_free"
 	g := rendezvousGateway(private, free)
+	stranger := coordinator.Tenant{Project: "prj_stranger"}
 
-	owner := g.rendezvousTenant(context.Background(), AttemptDescriptor{
-		Tenant: coordinator.Tenant{Project: "prj_stranger"}, PoolID: private})
-	if owner.Project != rendezvousOwnerProject {
-		t.Fatalf("a private pool resolved to tenant %q, want its owner %q — a stranger's attempt would "+
-			"share a queue with the owner's machines", owner.Project, rendezvousOwnerProject)
+	got := g.rendezvousTenant(context.Background(), AttemptDescriptor{Tenant: stranger, PoolID: private})
+	if got != stranger {
+		t.Fatalf("a stranger naming a private pool resolved to %q, want its own %q — anything else puts "+
+			"its attempt in the queue the OWNER's machines are parked in", got.Project, stranger.Project)
 	}
-	if owner.Project == "" {
-		t.Fatal("a private pool resolved to the EMPTY tenant: every tenant would meet in one rendezvous")
+	// And the queue it would wait on is not the one the owner's machine joined. Identity, because that is
+	// what "unreachable rather than refused" means here.
+	ownerQueue := g.queueFor(coordinator.Tenant{Project: rendezvousOwnerProject}, private)
+	_, strangerQueue := g.queueForAttempt(context.Background(), AttemptDescriptor{Tenant: stranger, PoolID: private})
+	if strangerQueue == ownerQueue {
+		t.Fatal("a stranger's attempt and the pool owner's machines share one queue: the cross-tenant " +
+			"offer queueKey exists to make unreachable is reachable again")
 	}
 }
 
