@@ -93,7 +93,16 @@ type RunnerListWindow struct {
 // expects, and whether enrolling into it needs a human. A pool has no credential to leak — its
 // enrolment key is a separate row and T3's surface — so every field here is public by construction.
 type RunnerPoolItem struct {
-	ID               string
+	ID string
+	// Project is the pool's OWNER, and "" is a real answer rather than a missing one: it is the FREE pool,
+	// the plane's, that every project on the installation may be placed onto. A named project is a private
+	// pool reserved to that tenant.
+	//
+	// ‼️ IT WAS ABSENT FROM THIS PROJECTION UNTIL THE FREE POOL EXISTED TO BE TOLD APART. While every pool
+	// belonged to the caller's own tenant the field carried no information; the moment `NULL` became a
+	// second kind of pool, a listing that omitted it left an operator unable to see which of their pools
+	// their neighbours can also run on -- the one fact that decides where a run lands.
+	Project          string
 	Name             string
 	Posture          string
 	OS               string
@@ -126,20 +135,22 @@ type RunnerPoolCreate struct {
 	StrictEnrollment bool
 }
 
-// ErrRunnerPoolNameTaken is the runner_pools UNIQUE (project_id, name) index rendered as an answer rather
-// than as a 500. It is declared HERE rather than in internal/fleet because the api package is imported BY
-// the stores and cannot import them back — the same direction RunnerListWindow is declared in.
+// ErrRunnerPoolNameTaken is the runner_pools name uniqueness rendered as an answer rather than as a 500.
+// It is declared HERE rather than in internal/fleet because the api package is imported BY the stores and
+// cannot import them back — the same direction RunnerListWindow is declared in.
 //
-// The index was DECLARED as (organization_id, project_id, name) and rebuilt without the organization
-// during the A.2 organization removal. The shape above is what a reader finds in pg_indexes, and that is
-// where to check it rather than in any one migration — the index NAME (`runner_pools_name_key`) survives
-// a chain rewrite, a migration number does not:
+// TWO indexes raise it, not one, and the split is a correctness requirement rather than tidiness: a UNIQUE
+// index treats NULLs as DISTINCT, so the single (project_id, name) index this comment used to name stopped
+// refusing duplicates for FREE pools the moment the owner became optional. Check them by NAME rather than
+// by migration number, which a chain rewrite changes:
 //
-//	SELECT indexdef FROM pg_indexes WHERE indexname = 'runner_pools_name_key';
+//	SELECT indexname, indexdef FROM pg_indexes WHERE indexname LIKE 'runner_pools%name_key';
+//	  runner_pools_free_name_key -> (name)               WHERE project_id IS NULL
+//	  runner_pools_name_key      -> (project_id, name)   WHERE project_id IS NOT NULL
 //
-// The ERROR did not change meaning across that rebuild: the collision it names was always "this project
-// already has a pool by that name", because a project belonged to exactly one organization — dropping the
-// leading column narrowed the index's TEXT, not the set of rows it rejects.
+// So the collision it names is "a pool by that name already exists WHERE this one would live" — in the
+// caller's project, or on the plane. The SENTINEL's own text says `in this project` and the ROUTE names
+// the right half, because only the route knows the scope: see createRunnerPool's 409.
 var ErrRunnerPoolNameTaken = errors.New("api: a runner pool with that name already exists in this project")
 
 // runnerPoolPostures is the pair migration 000045 declares in its CHECK. Validating on the ROUTE makes a
@@ -417,8 +428,15 @@ func (h *runnerHandler) createRunnerPool(w http.ResponseWriter, r *http.Request)
 	})
 	switch {
 	case errors.Is(err, ErrRunnerPoolNameTaken):
+		// The detail names WHERE the collision is, because the two are different places and an operator
+		// acts differently on each: a plane-scoped caller collided with the plane's own free pools, and
+		// renaming to something the caller's project happens not to use would not help.
+		where := "this project"
+		if scope.Project == "" {
+			where = "the plane"
+		}
 		middleware.WriteProblem(w, r, http.StatusConflict, "already_exists",
-			"this project already has a runner pool with that name")
+			where+" already has a runner pool with that name")
 		return
 	case err != nil:
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
@@ -766,6 +784,9 @@ func runnerPoolView(it RunnerPoolItem) map[string]any {
 		"id": it.ID, "object": "runner_pool", "name": it.Name, "posture": it.Posture,
 		"os": it.OS, "arch": it.Arch, "strict_enrollment": it.StrictEnrollment,
 		"created_at": it.CreatedAt,
+		// Rendered UNCONDITIONALLY, including empty, for runnerView's reason: absence would read as "not
+		// asked", and here the empty value is the answer that matters most -- this pool is the plane's.
+		"project_id": it.Project,
 	}
 	if it.Waiting != nil {
 		view["waiting"] = *it.Waiting

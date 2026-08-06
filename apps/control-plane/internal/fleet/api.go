@@ -63,7 +63,7 @@ func (s *Store) ListRunnerPools(ctx context.Context, project string, w api.Runne
 // runtime fact joins a stored one on this surface.
 func poolItem(row Pool) api.RunnerPoolItem {
 	return api.RunnerPoolItem{
-		ID: row.ID, Name: row.Name, Posture: row.Posture, OS: row.OS, Arch: row.Arch,
+		ID: row.ID, Project: row.Project, Name: row.Name, Posture: row.Posture, OS: row.OS, Arch: row.Arch,
 		StrictEnrollment: row.StrictEnrollment, CreatedAt: row.CreatedAt,
 	}
 }

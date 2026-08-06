@@ -157,6 +157,53 @@ func TestRunnerPoolsRenderThePostureForTheCallersTenant(t *testing.T) {
 	}
 }
 
+// TestAListingTellsAFreePoolFromAPrivateOne is the projection's half of the free-fleet change, and it
+// exists because the field it asserts was ABSENT from runnerPoolView until a free pool could exist.
+//
+// While every pool belonged to the caller's own tenant, `project_id` carried no information and leaving
+// it out cost nothing. The moment NULL became a second kind of pool — one the plane owns and every other
+// tenant may also be placed onto — a listing without it left an operator unable to tell which of the
+// pools on their screen their neighbours share. That is the single fact that decides where a run lands,
+// and it was the one fact the surface did not carry.
+//
+// Both rows are asserted together because the claim is a DIFFERENCE: a projection that hard-coded either
+// answer would pass a test that only ever looked at one of them.
+func TestAListingTellsAFreePoolFromAPrivateOne(t *testing.T) {
+	registry := &fakeRunnerRegistry{pools: []RunnerPoolItem{
+		{ID: "pool_free", Name: "plane", Posture: "unsandboxed-host", CreatedAt: time.Unix(1_700_000_000, 0).UTC()},
+		{ID: "pool_own", Project: "prj_1", Name: "mine", Posture: "unsandboxed-host", CreatedAt: time.Unix(1_700_000_000, 0).UTC()},
+	}}
+	status, body := getRunnerPools(t, scopedRouter(t, registry, nil))
+	if status != http.StatusOK {
+		t.Fatalf("GET /v1/runner-pools = %d, want 200: %s", status, body)
+	}
+	var page struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(body, &page); err != nil {
+		t.Fatalf("decode page: %v (%s)", err, body)
+	}
+	if len(page.Data) != 2 {
+		t.Fatalf("page carries %d row(s), want 2: %s", len(page.Data), body)
+	}
+	owners := map[string]any{}
+	for _, row := range page.Data {
+		got, present := row["project_id"]
+		if !present {
+			t.Fatalf("pool %v renders no project_id: absence reads as \"not asked\", and here the empty "+
+				"value is the answer that matters most — this pool is the plane's (%s)", row["id"], body)
+		}
+		owners[row["id"].(string)] = got
+	}
+	if owners["pool_free"] != "" {
+		t.Fatalf("the free pool rendered project_id %v, want \"\" — a pool the plane owns must not appear "+
+			"to belong to the caller, or an operator will think their neighbours cannot reach it", owners["pool_free"])
+	}
+	if owners["pool_own"] != "prj_1" {
+		t.Fatalf("the private pool rendered project_id %v, want prj_1", owners["pool_own"])
+	}
+}
+
 // TestRunnerPoolsRouteUnmountedWithoutARegistry is the other half of the router's optional-surface
 // rule: a binary that wires no registry must 404 the route rather than 500 on a nil seam.
 func TestRunnerPoolsRouteUnmountedWithoutARegistry(t *testing.T) {
