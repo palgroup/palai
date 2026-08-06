@@ -581,6 +581,18 @@ var deploymentCatalogue = []catalogueEntry{
 		ReaderFile: cpMain, ReaderFunc: "a2aPusherFromEnv",
 	},
 
+	{
+		Name: "PALAI_A2A_PUSH_ALLOWED_HOSTS", Group: "egress", Kind: kindValue, Default: "unset — A2A push is NOT MOUNTED at all: the agent card advertises `pushNotifications: false` and the push CRUD routes 404",
+		Effect: "The one fail-closed switch for A2A push, and it decides existence before it decides " +
+			"destinations. A push POSTs to a URL the CLIENT registered, so it stays off unless a deployment " +
+			"says where deliveries may go. A comma-separated list turns push on and restricts it to those " +
+			"hosts (whole-host equality after normalisation); the single value `*` turns push on with NO " +
+			"allow-list, so any public https destination a client names is delivered to. The egress firewall " +
+			"is a separate half and still applies.",
+		Mutability: mutabilityBringUp, ChangeWith: changeCP,
+		ReaderFile: cpMain, ReaderFunc: "a2aPusherFromEnv",
+	},
+
 	// --- where a shell command runs, which is a security posture rather than a feature ---------------
 	{
 		Name: "PALAI_SANDBOX_IMAGE", Group: "shell", Kind: kindValue, Default: "none — there is no shell tool; a shell call fails cleanly rather than escaping",
@@ -832,9 +844,15 @@ var unreportedSettings = map[string]string{
 // STRUCTURALLY rather than by this map (desiredWritable drops Kind == kindPath before it ever reads a name)
 // and are listed anyway, because a reader asking "why can I not set the master key path here" deserves the
 // sentence rather than an inference from a missing row.
-// secretFilePrefixes are read as PREFIXES rather than as variables: the full name carries the secret's
-// own reference (`PALAI_MCP_SECRET_FILE_<REF>`), so there is no fixed name a catalogue could hold. They
-// are also credential-bearing, which TestNoCredentialBearingVariableIsCatalogued keeps out on purpose.
+// secretFilePrefixes are read as PREFIXES rather than as variables: every read is
+// `os.Getenv(prefix + secretEnvKey(ref))`, so the full name carries the secret's own reference and there
+// is no fixed name a catalogue row could hold. That — and only that — is why they are exempt.
+//
+// ‼️ THE FIRST DRAFT OF THIS COMMENT ALSO CALLED THEM CREDENTIAL-BEARING, AND THAT WAS WRONG. Each one
+// holds a FILE PATH, never the secret inline, and this tree's rule is that a handle is not a secret —
+// `PALAI_SECRET_MASTER_KEY_FILE` is catalogued, by path, precisely because seeing where the master key
+// lives is what makes the deployment's posture visible. A right rule with a wrong reason attached is how
+// it gets applied to the wrong case later.
 var secretFilePrefixes = []string{
 	"PALAI_A2A_REMOTE_SECRET_FILE_",
 	"PALAI_INBOUND_SECRET_FILE_",
@@ -872,8 +890,6 @@ var uncataloguedSettings = func() map[string]string {
 			[]string{"PALAI_MCP_SWEEP_GRACE", "PALAI_MCP_SWEEP_INTERVAL", "PALAI_MCP_TIMEOUT"}},
 		{"Inbound intake bounds: backlog, in-flight ceiling, raw retention and clock tolerance.",
 			[]string{"PALAI_INBOUND_BACKLOG_MAX", "PALAI_INBOUND_MAX_INFLIGHT", "PALAI_INBOUND_RAW_TTL", "PALAI_INBOUND_TOLERANCE"}},
-		{"The A2A push allow-list of destination hosts. Its sibling boundary PALAI_A2A_PUSH_ALLOW_PRIVATE was catalogued on 2026-08-06; this one is next, and it is a list rather than a switch.",
-			[]string{"PALAI_A2A_PUSH_ALLOWED_HOSTS"}},
 		{"Artifact garbage collection cadence and the grace an artifact gets before it is eligible.",
 			[]string{"PALAI_ARTIFACT_GC_GRACE", "PALAI_ARTIFACT_GC_INTERVAL"}},
 		{"The capability worker's own listener and the TTL of the job-scoped identity it hands out.",
@@ -939,6 +955,10 @@ var nonDesiredReason = map[string]string{
 		"metadata service, an unauthenticated admin port, a database — and the request would leave this " +
 		"process with this process's network position. It is a bring-up decision about where the deployment " +
 		"SITS, made by whoever put it there.",
+	"PALAI_A2A_PUSH_ALLOWED_HOSTS": "it decides whether this deployment delivers to client-named URLs at " +
+		"all, and `*` removes the allow-list entirely. A switch that turns an outbound POST-to-anywhere " +
+		"feature ON belongs with whoever owns the deployment's network position, not with whoever can reach " +
+		"a settings form.",
 	"PALAI_A2A_PUSH_ALLOW_PRIVATE": "the same boundary on the push path, and it is worse in one respect: a " +
 		"push destination is supplied per TASK, so a form that opened private addresses would let a caller " +
 		"choose the internal address afterwards rather than at configuration time.",
