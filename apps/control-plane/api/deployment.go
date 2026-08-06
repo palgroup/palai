@@ -661,6 +661,33 @@ var deploymentCatalogue = []catalogueEntry{
 		ReaderFile: cpMain, ReaderFunc: "main",
 	},
 
+	// --- how hard a failing outbound endpoint is retried -----------------------------------------------
+	{
+		Name: "PALAI_WEBHOOK_TICK", Group: "execution", Kind: kindValue, Default: "1s",
+		Effect: "The outbound-delivery pump's loop cadence. The pump is a SYSTEM loop serving every project's " +
+			"endpoints, inert until one is registered, and a killed process simply misses ticks — the next run " +
+			"resumes from each endpoint's durable cursor. A delivery never blocks a run, so this paces how " +
+			"promptly a queued delivery leaves, not whether it leaves.",
+		Mutability: mutabilityBringUp, ChangeWith: changeCP,
+		ReaderFile: cpMain, ReaderFunc: "startWebhookPump",
+	},
+	{
+		Name: "PALAI_WEBHOOK_BACKOFF_BASE", Group: "execution", Kind: kindValue, Default: "30s",
+		Effect: "The first step of the jittered exponential curve a FAILING endpoint is retried on. It is the " +
+			"politeness bound as much as the recovery one: a receiver that is down gets this long before the " +
+			"second attempt, and every endpoint in the deployment shares the shape.",
+		Mutability: mutabilityBringUp, ChangeWith: changeCP,
+		ReaderFile: cpMain, ReaderFunc: "startWebhookPump",
+	},
+	{
+		Name: "PALAI_WEBHOOK_BACKOFF_MAX", Group: "execution", Kind: kindValue, Default: "1h",
+		Effect: "The ceiling that curve flattens at, so a long-dead endpoint is retried hourly rather than " +
+			"never or forever-sooner. It decides how quickly a receiver that comes back is noticed: an " +
+			"endpoint fixed one minute after the curve reached this ceiling waits the rest of it.",
+		Mutability: mutabilityBringUp, ChangeWith: changeCP,
+		ReaderFile: cpMain, ReaderFunc: "startWebhookPump",
+	},
+
 	// --- what a client watching a run sees, and when a slow one is dropped -----------------------------
 	// Every default here is applied by SSEConfig.withDefaults (api/events.go) rather than at the read, so
 	// these four are the family deployment_test.go's default guard names as its stated ceiling: the numbers
@@ -1070,8 +1097,6 @@ var uncataloguedSettings = func() map[string]string {
 		reason string
 		names  []string
 	}{
-		{"Outbound webhook delivery pacing and retry envelope.",
-			[]string{"PALAI_WEBHOOK_BACKOFF_BASE", "PALAI_WEBHOOK_BACKOFF_MAX", "PALAI_WEBHOOK_TICK"}},
 		{"Trigger reconcile loop: how often it runs, how much it takes, and how long a mapped trigger is held.",
 			[]string{"PALAI_TRIGGER_MAPPED_GRACE", "PALAI_TRIGGER_RECONCILE_BATCH", "PALAI_TRIGGER_RECONCILE_TICK"}},
 		{"MCP client sweep and dial timeout. The boundary of this family — PALAI_MCP_ALLOW_PRIVATE — was catalogued on 2026-08-06 and left this list; what remains is pacing.",
@@ -1139,10 +1164,13 @@ var nonDesiredReason = map[string]string{
 	"PALAI_S3_REGION": "it travels with the endpoint credential pair as one decision about WHERE this " +
 		"deployment's artifacts live and how it signs for them. Splitting one of the four off into a form " +
 		"would let a panel change a signature's region while the endpoint it is signing for stays put.",
-	"PALAI_SSE_HEARTBEAT":     "read once, when the router is built: a written value would not be the one in force until a restart.",
-	"PALAI_SSE_POLL_INTERVAL": "read once, when the router is built, and the same reason.",
-	"PALAI_SSE_WRITE_TIMEOUT": "read once, when the router is built. It is also the bound that drops a stalled consumer, so a form offering it offers to remove the protection against one.",
-	"PALAI_SSE_BATCH_LIMIT":   "read once, when the router is built, and it bounds per-connection memory.",
+	"PALAI_WEBHOOK_TICK":         "read once, when the pump starts, and held by it for the process's life.",
+	"PALAI_WEBHOOK_BACKOFF_BASE": "read once, when the pump starts. It is also the bound that keeps a failing receiver from being hammered, so a form offering it offers to remove somebody else's protection.",
+	"PALAI_WEBHOOK_BACKOFF_MAX":  "read once, when the pump starts.",
+	"PALAI_SSE_HEARTBEAT":        "read once, when the router is built: a written value would not be the one in force until a restart.",
+	"PALAI_SSE_POLL_INTERVAL":    "read once, when the router is built, and the same reason.",
+	"PALAI_SSE_WRITE_TIMEOUT":    "read once, when the router is built. It is also the bound that drops a stalled consumer, so a form offering it offers to remove the protection against one.",
+	"PALAI_SSE_BATCH_LIMIT":      "read once, when the router is built, and it bounds per-connection memory.",
 	"PALAI_INBOUND_MAX_INFLIGHT": "a flood bound whose `0` means UNBOUNDED. A form offering it would let one " +
 		"edit remove the ceiling protecting every tenant on the process, and the value that does it is the one " +
 		"a reader would type to mean \"none\". Read once, at bring-up.",
