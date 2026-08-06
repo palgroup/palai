@@ -61,8 +61,61 @@ jobs:
       - name: Install locked dependencies
         run: make bootstrap
 
-      - name: Pull pinned PostgreSQL spike image
-        run: docker pull postgres@sha256:17e67d7b9890c99b055ba1e0d5c5be4ec27c9d3a72bda32db24a5e5d8a85af0c
-
+      # ‼️ A `docker pull` OF THE PINNED POSTGRES IMAGE STOOD HERE AND NOTHING IN THIS JOB USED IT.
+      # Measured 2026-08-06: no leg of `make verify` touches Docker, and the one test that would have —
+      # spikes/postgres-coordinator — SKIPS unless PALAI_SPIKE_POSTGRES_URL is set, which this workflow
+      # never sets. So the job paid for the image on every run, the spike reported green by skipping, and
+      # the step's own name called it a "spike image" for a spike that never opened a connection.
+      #
+      # The pull moved to the job that boots the image (below), where its name is true.
       - name: Verify foundation
         run: make verify || { bash -x scripts/test/foundation.sh; exit 1; }
+
+  # ‼️ THE COMPONENT TIER RUNS HERE, AND UNTIL NOW IT RAN NOWHERE. CI was `make verify` alone, and the
+  # Makefile keeps this tier out of it deliberately (it is Docker-bound) — so every guard that needs a
+  # real PostgreSQL was enforced only when a person remembered to run it on a laptop. What that left
+  # unguarded is not incidental: `tests/component/fleet` holds ONE CUSTOMER AT A TIME ON A SHARED MAC
+  # (000008), the capacity ceiling, the lease lifecycle and the machine-minutes bill, and
+  # apps/control-plane/internal/execution holds the run spine against a real database. A boundary whose
+  # only witness is a local run is a boundary that regresses on a branch nobody ran it on.
+  #
+  # IT BLOCKS, and that is the decision rather than an oversight. A non-blocking job that proves a
+  # security boundary is the same as no job: the first red would be read as noise, which is exactly how a
+  # tier ends up unread. If it proves flaky, the flake is a finding to fix — this tree has already
+  # recorded twice that a red under load was the product and not the machine.
+  #
+  # 30 MINUTES, AND THE NUMBER IS MEASURED RATHER THAN PICKED. Run on this tree 2026-08-06 at load 4:
+  # 5m49s wall, EXIT=0, 619 `--- PASS`, of which the slowest legs are
+  # apps/control-plane/internal/execution (123.9s) and tests/component/postgres (97.1s). The tier's own
+  # header records the same suite at >600s on a box at load 23, so the ceiling is ~3x the worst measured
+  # honest pass — a loaded runner does not go red for being loaded, and a genuine deadlock is still cut.
+  #
+  # The selector was checked rather than assumed: `TEST=postgres scripts/test/component` prints
+  # `--- PASS: TestASecondCustomerIsRefusedAMachineTheFirstIsHolding`,
+  # `TestTheMachineOpensToTheNextCustomerWhenTheFirstSettles` and
+  # `TestTheFourthLeaseOnAThreeCapacityMachineIsRefused` by name. A job whose coverage is read off a
+  # script instead of run is how a gate ends up green over a tier it never reached.
+  component:
+    name: Component (PostgreSQL)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+
+      # Go and nothing else. The postgres suite is Go plus Docker: it needs no pnpm, no Node, no Python
+      # and no `make bootstrap`, and installing them here would make this job slower for no coverage.
+      - name: Install Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: 1.26.4
+          check-latest: false
+          cache: false
+
+      - name: Pull the pinned PostgreSQL image this tier boots
+        run: docker pull postgres@sha256:17e67d7b9890c99b055ba1e0d5c5be4ec27c9d3a72bda32db24a5e5d8a85af0c
+
+      - name: Component tier — postgres suite
+        run: TEST=postgres scripts/test/component
