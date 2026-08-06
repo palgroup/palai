@@ -3,7 +3,7 @@ SHELL := /bin/bash
 
 .PHONY: \
 	bootstrap generate check-generated lint test-unit test-component test-e2e \
-	test-fault test-security test-performance test-live-provider test-live-hook-deny test-live-tenancy test-live-second-tenant test-live-run-history test-live-mac test-live-concurrency test-spikes evidence-spikes \
+	test-fault test-security test-performance test-live-provider test-live-hook-deny test-live-tenancy test-live-second-tenant test-live-run-history test-live-mac test-live-concurrency test-live-ios-demo test-spikes evidence-spikes \
 	check-spike-reports verify local-up local-down local-doctor uat-local-live \
 	uat-interactive uat-coding uat-recovery uat-automation uat-extensibility uat-managed-cloud uat-self-host \
 	uat-kubernetes uat-kind uat-sh2 uat-sdk-parity uat-extensions uat-stable-release uat-wiring uat-wiring-live \
@@ -153,6 +153,24 @@ test-live-mac:
 #   PALAI_DISPATCH_WORKERS=2 PALAI_RUNNER_CONCURRENCY=2 PALAI_WORKSPACE_ROOT=<abs> palai up --native
 test-live-concurrency:
 	@go test -tags=live -count=1 -v -timeout 12m ./tests/live/concurrency/
+
+# THE iOS DEMO CHAIN, PROVEN AS A PRODUCT RATHER THAN AS A SUITE — clone a real public repo, run a shell
+# on it, propose the change, and (optionally) build the app and show a screenshot.
+#
+# ‼️ IT IS HERE BECAUSE IT WAS THE ONLY LIVE PROOF IN THIS TREE WITH NO INVOCATION. scripts/live/ holds
+# exactly one file and twelve sibling live proofs above have a target; this one was reachable only by
+# walking the directory, which for the smoke that answers "can a person point the demo at a repository
+# and watch it work" is the wrong kind of hidden. Measured 2026-08-06: `git grep` found no reference to
+# it anywhere in the tree.
+#
+# It needs a running stack (PALAI_BASE_URL / PALAI_API_KEY, defaulted from .palai) and prints UNPROVEN
+# rather than passing for a leg it cannot run — a smoke that blurred those two would convert a missing
+# capability into a green line. Extra legs are opt-in:
+#   ARGS=--with-build     also builds the app and shows a screenshot
+#   ARGS=--with-accounts  also proves the per-session uid (needs the sudoers entry from
+#                         scripts/ops/palai-session-account install-sudoers "$$(id -un)")
+test-live-ios-demo:
+	@bash scripts/live/ios-demo-smoke $(ARGS)
 
 verify: lint check-generated test-unit test-spikes check-spike-reports
 	@bash scripts/verify/repository-boundary.sh
