@@ -138,6 +138,52 @@ func TestAReleaseServesEveryDeviceTheInstallerCanResolve(t *testing.T) {
 	}
 }
 
+// TestTheNamePalaiMeansExactlyOneThingInARelease is the other half of T7's first claim. The device
+// artifact and the operator's tool are DIFFERENT PROGRAMS, and until 2026-08-06 a release directory
+// carried both under the name `palai`: the CLI at the root, and the agent inside every device archive.
+// An operator who unpacked a release and ran `./palai enroll` got "unknown command" from a binary that
+// has no enrol; an installer that had resolved the root copy would have put the wrong program on a
+// fleet machine.
+//
+// The property is stated over the whole tree the release writes rather than over the two paths that
+// happen to collide today — a third producer adding another `palai` is the same defect.
+func TestTheNamePalaiMeansExactlyOneThingInARelease(t *testing.T) {
+	out, idx := buildRelease(t, "--cli-targets", hostTarget(t))
+
+	err := filepath.WalkDir(out, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() && d.Name() == "palai" {
+			rel, _ := filepath.Rel(out, path)
+			t.Errorf("the release writes a file called `palai` at %s — inside a device archive that name "+
+				"is the agent, so a second one in the directory makes the name ambiguous", rel)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// And the self-host CLI is present under its own name, so this cannot pass by the release having
+	// stopped shipping an operator tool at all.
+	var cli int
+	for _, a := range idx.Artifacts {
+		if a.Kind == "cli" {
+			cli++
+			if !strings.Contains(filepath.Base(a.File), "palai-selfhost-") {
+				t.Errorf("the CLI artifact %s is not named palai-selfhost-<os>-<arch>", a.File)
+			}
+		}
+	}
+	if cli == 0 {
+		t.Error("the release indexes no CLI artifact — the check above would pass on an empty set")
+	}
+	if _, err := os.Stat(filepath.Join(out, "palai-selfhost")); err != nil {
+		t.Errorf("the release root has no palai-selfhost: %v", err)
+	}
+}
+
 // hostTarget is this machine's <os>/<arch>, so the CLI leg of the build stays a single compile. It is
 // not the subject of this test — the agent matrix is.
 func hostTarget(t *testing.T) string {

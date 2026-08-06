@@ -6,7 +6,7 @@
   "exception_id_note": "`id` must be the id the SCANNER printed for the finding — that is a GHSA-… as often as a CVE-…, and the two are not interchangeable here. Read it out of sbom/vuln-report.json (decision.blocking[].id); an exception whose id does not match anything simply never applies, and the finding keeps blocking.",
   "exception_example": {
     "id": "CVE-2026-0000",
-    "artifact": "cli/palai-linux-amd64",
+    "artifact": "cli/palai-selfhost-linux-amd64",
     "owner": "release-owner <owner@example.com>",
     "opened": "2026-07-25",
     "expires": "2026-08-24",

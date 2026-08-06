@@ -60,8 +60,14 @@ the RAM and core figures are the idle measurement plus judgement, and are labell
 ### Prerequisites
 
 - Docker Engine + Compose v2.24+ (for `!reset` and inline `configs`; verify: `docker compose version`).
-- The `palai` binary for your platform (`scripts/release/build.sh` produces the CLI matrix;
-  until publication, take it from a colleague's build or [route B](#route-b--from-a-checkout-development)).
+- The `palai` binary for your platform. The release calls this artifact **`palai-selfhost-<os>-<arch>`**
+  (`scripts/release/build.sh` produces the CLI matrix, and writes the host one to `palai-selfhost` at the
+  release root); install it under whatever name your runbooks use — this document and every runbook say
+  `palai`. **The name in the release is deliberate:** `palai` inside a `device/…tar.gz` archive is a
+  DIFFERENT program — the fleet agent `install.sh` puts on a machine, which has `enroll` and none of the
+  commands below. A host that runs this CLI is an operator workstation, not a fleet device; do not enrol
+  one machine as both. Until publication, take it from a colleague's build or
+  [route B](#route-b--from-a-checkout-development).
 - `openssl` (to generate the master key).
 - The three stack images reachable by your Docker daemon — see the images ceiling above.
 

@@ -178,23 +178,29 @@ add_artifact() { # kind file os arch [extra-json]
 $entry"; fi
 }
 
-# --- CLI matrix -------------------------------------------------------------------------------
+# --- self-host CLI matrix ---------------------------------------------------------------------
+# ‼️ NAMED palai-selfhost, BECAUSE A RELEASE MAY NOT SAY `palai` TWICE. This is the operator's tool —
+# `local up`, `admin`, `upgrade`, `doctor` — and it is a DIFFERENT PROGRAM from the device agent that
+# ships inside device/palai-<version>-<os>-<arch>.tar.gz under the name `palai`. Until 2026-08-06 the
+# release wrote this one to $out/palai, so a directory carrying both had two unrelated binaries under
+# one name and `./palai enroll` in it would answer "unknown command". An operator installs this as
+# whatever their runbooks call it; the fleet's machines never receive it at all.
 for target in $(echo "$cli_targets" | tr ',' ' '); do
   goos="${target%%/*}"; goarch="${target##*/}"
-  bin="cli/palai-${goos}-${goarch}"
+  bin="cli/palai-selfhost-${goos}-${goarch}"
   echo "build.sh: CLI ${goos}/${goarch} at $stamp" >&2
   CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
     go build -trimpath -buildvcs=false -ldflags "$release_ldflags" -o "$out/$bin" ./cmd/cli
   add_artifact cli "$bin" "$goos" "$goarch"
 done
 
-# $out/palai is the host CLI at its historical path (upgrade-drill and the docs invoke it directly).
-# It is a COPY of the matrix artifact when the host target is in the matrix, so its digest is one of
-# the indexed ones rather than a seventh, separately-built binary.
-if [ -f "$out/cli/palai-${host_os}-${host_arch}" ]; then
-  cp "$out/cli/palai-${host_os}-${host_arch}" "$out/palai"
+# $out/palai-selfhost is the host CLI at the release root, where the upgrade drill invokes it. It is a
+# COPY of the matrix artifact when the host target is in the matrix, so its digest is one of the indexed
+# ones rather than a seventh, separately-built binary.
+if [ -f "$out/cli/palai-selfhost-${host_os}-${host_arch}" ]; then
+  cp "$out/cli/palai-selfhost-${host_os}-${host_arch}" "$out/palai-selfhost"
 else
-  CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags "$release_ldflags" -o "$out/palai" ./cmd/cli
+  CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags "$release_ldflags" -o "$out/palai-selfhost" ./cmd/cli
 fi
 
 # --- device agent archives ----------------------------------------------------------------------

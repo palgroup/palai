@@ -629,7 +629,7 @@ today and one installed next month converge on whatever the plane's desired vers
 settings poll. Pinning stays available for image bakes (`PALAI_VERSION`, T7b) and is not the mechanism
 that keeps a fleet consistent.
 
-### T7 — Cut the real device distributions ⚠️ PARTLY DONE (2026-08-06)
+### T7 — Cut the real device distributions ⚠️ MOSTLY DONE (2026-08-06)
 
 **Goal:** Install from release artifacts, not from the repository.
 
@@ -643,9 +643,18 @@ that keeps a fleet consistent.
   REAL `install.sh` once per uname pair it accepts, over HTTP, asserting the binary that lands is the one
   from THAT triple's archive. **Neither side's platform list is written in the test.** Perturbed by
   restoring the linux-only default: both darwin legs RED, both linux legs PASS.
-- ❌ …and must identify `palai-selfhost` separately — **NOT DONE, and the collision is live**: the release
-  writes the admin CLI to `$out/palai` while `install.sh` installs the device agent as `palai`. Two
-  different binaries, one name. One runtime consumer (`scripts/test/upgrade-drill.sh:30`).
+- ✅ …and must identify `palai-selfhost` separately — the release wrote the operator's CLI to `$out/palai`
+  while every device archive carries the agent as `palai`. Two unrelated programs, one name: `./palai
+  enroll` in a release directory answered "unknown command". The CLI matrix is now
+  `cli/palai-selfhost-<os>-<arch>` with the host copy at `palai-selfhost`, and
+  `TestTheNamePalaiMeansExactlyOneThingInARelease` walks the WHOLE release tree rather than the two paths
+  that collide today — a third producer adding another `palai` is the same defect.
+  **The operator COMMAND is deliberately unchanged.** Renaming it would touch 54 documents, 21 UAT cases
+  and 14 scripts, and — the part that decides it — 5 runbook transcripts that are RECORDINGS of commands
+  run against a live stack. `TestRunbookCommandsWereExecuted` requires every runbook command to appear in
+  one, so the rename's real price is re-recording them on a running stack, not editing them. Editing them
+  would be fabricating evidence. `install.md` states the artifact name and that a machine is an operator
+  workstation or a fleet device, never both.
 - ✅ Extracting the device package must reveal no server/admin command implementation —
   `cmd/runner/surface_test.go` asserts the LINKED package set (a grep of cmd/runner/*.go cannot see an
   admin verb reached through a helper). Perturbed with a non-test import of the control-plane API: RED.
