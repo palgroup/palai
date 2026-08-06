@@ -205,7 +205,15 @@ func startCandidate(ctx context.Context, candidate candidateSpec, heartbeat time
 		_, _ = io.Copy(stdoutRemainder, reader)
 	}()
 
-	readinessTimer := time.NewTimer(5 * time.Second)
+	// ‼️ THIS BOUNDS LIVENESS, NOT SPEED, AND AT FIVE SECONDS IT BOUNDED SPEED. Measured 2026-08-06: this
+	// test passed twice in isolation on the same tree that had just failed it inside `make verify`, on a
+	// machine at load average 8 — the candidate comes up, it comes up later than a process competing with
+	// every other package in the gate can promise. A deadline that turns red because the box was busy
+	// teaches a reader to re-run the gate instead of reading it, which costs more than the minutes it
+	// saves. Thirty seconds still fails a candidate that never prints a readiness line at all, which is
+	// the only thing this select can honestly assert; the three arms above it are what report a candidate
+	// that died or answered garbage, and those are immediate either way.
+	readinessTimer := time.NewTimer(30 * time.Second)
 	defer readinessTimer.Stop()
 	var ready readyMessage
 	select {
