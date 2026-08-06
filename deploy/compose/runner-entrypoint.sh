@@ -15,6 +15,5 @@ set -eu
 # wins, so a deployment that sets them is unchanged.
 PALAI_ENROLLMENT_TOKEN="$(cat "$PALAI_ENROLLMENT_TOKEN_FILE")"
 export PALAI_ENROLLMENT_TOKEN
-export PALAI_CONTROLLER_CA="$PALAI_RUNNER_CA_CERT"
 
 exec /usr/local/bin/palai-runner
