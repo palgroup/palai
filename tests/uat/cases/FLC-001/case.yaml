@@ -23,6 +23,6 @@ proof:
   - cmd/cli/internal/admin/pool_test.go:TestPoolSetStrictReachesTheRealRouter
   - cmd/cli/internal/admin/pool_test.go:TestE24HandoverBlockStillDoesNotWork
   - cmd/cli/internal/admin/pool_test.go:TestPoolNeedsTheProvisionCapability
-  - cmd/cli/internal/admin/pool_test.go:TestPoolCreateNeedsAProjectScope
+  - cmd/cli/internal/admin/pool_test.go:TestPoolCreateWithNoProjectScopeCreatesAFreePool
   - tests/uat/fleet/reachable_test.go:TestEveryE24ExportedSurfaceHasAProductionCaller
   - tests/security/tenancy/tenancy_test.go:TestForeignPoolWriteAndUpdateAreRejected

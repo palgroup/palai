@@ -258,7 +258,7 @@ func TestPoolCreateWithNoProjectScopeCreatesAFreePool(t *testing.T) {
 //
 // grantSystemAlongside augments scope.Scopes with `system` (Faz A.1 Task 3): every route this file drives
 // is now behind router.go's systemOnly gate on top of whatever this file already asserted, and a fixture
-// caller's Organization/Project (or its deliberate absence, in TestPoolCreateNeedsAProjectScope) is left
+// caller's Organization/Project (or its deliberate absence, in TestPoolCreateWithNoProjectScopeCreatesAFreePool) is left
 // untouched.
 func poolCLIServer(t *testing.T, fleet capi.RunnerRegistryAPI, scope middleware.Scope) *httptest.Server {
 	t.Helper()

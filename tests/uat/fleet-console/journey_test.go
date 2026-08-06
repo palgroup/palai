@@ -78,7 +78,7 @@ func TestFleetConsoleJourneyRunsThroughTheOperatorEntryPoint(t *testing.T) {
 		{"TestPoolSetStrictReachesTheRealRouter", "FLC-001 — the switch FLT-P12 said an operator could throw, which no operator could throw"},
 		{"TestE24HandoverBlockStillDoesNotWork", "FLC-001 — §3.6 D2 pinned as a TEST: `palai admin pool create …` is what a shipped plan's copy-paste block told an owner to run, and it still errors, so the runbook's correction is the shipped one"},
 		{"TestPoolNeedsTheProvisionCapability", "FLC-001 — the CLI's own gate, asserted rather than inherited"},
-		{"TestPoolCreateNeedsAProjectScope", "FLC-001 — a pool is a tenant-scoped name"},
+		{"TestPoolCreateWithNoProjectScopeCreatesAFreePool", "FLC-001 — a pool with no project is the PLANE's: the route CREATES one rather than answering 400, which is what makes a device that enrols once serve every project"},
 		{"TestEveryE24ExportedSurfaceHasAProductionCaller", "FLC-001's RIDER — FLT-P14 closes: `RunnerGateway.Waiting` had no reader for a whole epic, and E24's own sweep now reports it REACHED with its named exception DELETED rather than kept green"},
 		{"TestForeignPoolWriteAndUpdateAreRejected", "FLC-001 — the tenancy corpus over the two write routes E28 opened on a tenant table"},
 
