@@ -1071,10 +1071,21 @@ cordoned/drained/terminated according to the configured provider floor.
 | a plane the device did not start | ✅ measured — `http://127.0.0.1:60351/healthz` → `ok` |
 | the agent installed by `install.sh` | ✅ measured — `palai 0.1.0-local (darwin-arm64)`, digest verified |
 | `palai enroll` with only URL + key file | ⛔ blocked, then FIXED: the gateway certificate carried `DNS:control-plane` and nothing else, so enrolment by address failed `x509: … doesn't contain any IP SANs`. `8e058415` adds `localhost`, `127.0.0.1`, `::1` to the SERVER certificate. Re-measured on a fresh stack home: SANs present. |
-| the machine appears in Fleet | ⏳ pending a running plane on the fresh home |
-| an SDK session runs on THAT Mac | ⏳ |
+| the machine appears in Fleet | ✅ measured 2026-08-06 |
+| an SDK session runs on THAT Mac | ✅ measured 2026-08-06 — a session created from the PACKED SDK in an empty directory ran the shell tool on the enrolled Mac: `Darwin … RELEASE_ARM64_T6020 arm64`, `26.3` |
+| the workspace is archived and the session resumes | ✅ measured 2026-08-06 — the idle TTL archived and DELETED the allocation after 5m20s, and the next message resumed on a **different** allocation where `cat a0-resume.txt` returned `A0RESUME9ZK` |
 | three restarts, one machine row | ⏳ |
-| power cycle with nobody touching it | ⏳ (DoD 20's unmeasured case) |
+| power cycle with nobody touching it | ⏳ (DoD 20's unmeasured case) — it needs the OWNER: rebooting this Mac ends the session driving the measurement |
+
+**‼️ THE ✅ ROWS ABOVE PREDATE FOUR CHANGES ON THEIR OWN PATH AND HAVE NOT BEEN RE-MEASURED SINCE.** The
+workspace preflight now REFUSES an enrolment (T4), `runners.capacity` gained a writer driven by the
+machine's applied report (T3), the packaged binary carries a version stamp and a dirty tree is refused
+(T7), and the release's operator CLI was renamed to `palai-selfhost` (T7). Each one sits on the chain
+these rows measured. A re-run was attempted on 2026-08-06 at 07:05 and **stopped before starting**: the
+machine had 27.4 GB of 28.6 GB swap in use with 2.2M pageouts, and three ORPHANED stacks
+(`palai-1c30b599`, `palai-8e1459e9`, `palai-a1e00dad` — postgres + object-store pairs, 6 to 37 hours old,
+their control-plane processes dead) were holding the memory. Starting a fourth would have wedged the
+machine rather than measured anything. Recorded here rather than left as a silently skipped step.
 
 **A bring-up finding worth keeping:** `local up` builds the control-plane image and that build hangs on this machine (a recorded Docker-frontend hang). The NATIVE posture — control plane as a process, only Postgres/object-store in Docker — needs no such image and is also the posture a Mac fleet machine is in.
 
