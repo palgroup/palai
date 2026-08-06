@@ -629,11 +629,9 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 		mcpManager := mcpManagerFromEnv(spine, broker, route)
 		toolRegistry.SetMCP(mcpManager)
 		repo.SetMCP(mcpManager)
-		// The SAME flag the manager dials with, given to the create-time vet. Read once, here, because a
-		// registry that read the environment itself would be a second place deciding deployment posture.
-		allowPrivateMCP := os.Getenv("PALAI_MCP_ALLOW_PRIVATE") == "1"
+		// The SAME derivation the manager dials with, given to the create-time vet.
 		// Only the extensions registry vets a create; repo.SetMCP above binds the same client for discovery.
-		toolRegistry.SetMCPAllowPrivate(allowPrivateMCP)
+		toolRegistry.SetMCPAllowPrivate(mcpAllowsPrivateEgress())
 		startMCPOrphanSweep(ctx, supervisor)
 		// Wire the E12 T8 hooks (spec §28.17): the registry fires a run's registered hooks at the five pinned
 		// dispatch points. platform_inline hooks dispatch to the code-defined handler table (deny-all is the
@@ -1128,9 +1126,19 @@ func mcpManagerFromEnv(spine *coordinator.Store, broker *modelbroker.Broker, rou
 		// reachable servers are public ones, which for a private deployment is the wrong default in the
 		// other direction. The flag is opt-in, and the pinned dialer stays the connect-time authority
 		// either way: this widens what VetURL admits, it does not remove the vet.
-		AllowPrivate: os.Getenv("PALAI_MCP_ALLOW_PRIVATE") == "1",
+		AllowPrivate: mcpAllowsPrivateEgress(),
 	})
 }
+
+// mcpAllowsPrivateEgress reports whether this deployment lets an MCP server sit on a private address.
+//
+// ‼️ ONE DERIVATION, BECAUSE THE COMMENT ABOVE THE OTHER CALLER SAID THERE ALREADY WAS ONE. It read
+// "Read once, here, because a registry that read the environment itself would be a second place deciding
+// deployment posture" — and this file read the variable in TWO places, in two functions with no argument
+// between them. They agreed only because both happened to spell the comparison `== "1"`; the day one
+// accepted `true` as well, a create would be vetted under one posture and dialled under another, which is
+// the shape of an egress boundary that is open on one path and closed on the other.
+func mcpAllowsPrivateEgress() bool { return os.Getenv("PALAI_MCP_ALLOW_PRIVATE") == "1" }
 
 // dbSecretStore is the DB-backed secret store (E13 Task 3), set once at boot when a master key is configured
 // (nil otherwise). It is the single front-door the four env resolvers share via dbSecret, so a secret

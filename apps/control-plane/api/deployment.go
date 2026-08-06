@@ -560,6 +560,27 @@ var deploymentCatalogue = []catalogueEntry{
 		ReaderFile: cpMain, ReaderFunc: "startIdleRelease",
 	},
 
+	// --- what this deployment may DIAL, which is a boundary rather than a feature --------------------
+	{
+		Name: "PALAI_MCP_ALLOW_PRIVATE", Group: "egress", Kind: kindValue, Default: "unset — an MCP server must be a public address; loopback and RFC1918 are refused",
+		Effect: "Set to `1`, an MCP server may live on a private address: loopback, RFC1918, link-local. " +
+			"A self-hosted deployment's MCP server is frequently on its own network — a Jira behind a VPN, an " +
+			"internal wiki — so refusing them outright is the wrong default in the other direction. It WIDENS " +
+			"what `egress.VetURL` admits and removes nothing: the pinned dialer stays the connect-time " +
+			"authority, so a name that resolves elsewhere after the vet is still refused. One derivation " +
+			"serves both the create-time vet and the dial (`mcpAllowsPrivateEgress`).",
+		Mutability: mutabilityBringUp, ChangeWith: changeCP,
+		ReaderFile: cpMain, ReaderFunc: "mcpAllowsPrivateEgress",
+	},
+	{
+		Name: "PALAI_A2A_PUSH_ALLOW_PRIVATE", Group: "egress", Kind: kindValue, Default: "unset — a push destination must be a public https address",
+		Effect: "Set to `1`, an A2A push notification may be delivered to a private address, for a self-host " +
+			"receiver on the same network. Same shape as the MCP flag: it widens `egress.VetURL` and the pinned " +
+			"dialer still decides at connect time.",
+		Mutability: mutabilityBringUp, ChangeWith: changeCP,
+		ReaderFile: cpMain, ReaderFunc: "a2aPusherFromEnv",
+	},
+
 	// --- where a shell command runs, which is a security posture rather than a feature ---------------
 	{
 		Name: "PALAI_SANDBOX_IMAGE", Group: "shell", Kind: kindValue, Default: "none — there is no shell tool; a shell call fails cleanly rather than escaping",
@@ -847,12 +868,12 @@ var uncataloguedSettings = func() map[string]string {
 			[]string{"PALAI_WEBHOOK_BACKOFF_BASE", "PALAI_WEBHOOK_BACKOFF_MAX", "PALAI_WEBHOOK_TICK"}},
 		{"Trigger reconcile loop: how often it runs, how much it takes, and how long a mapped trigger is held.",
 			[]string{"PALAI_TRIGGER_MAPPED_GRACE", "PALAI_TRIGGER_RECONCILE_BATCH", "PALAI_TRIGGER_RECONCILE_TICK"}},
-		{"MCP client posture and sweep. PALAI_MCP_ALLOW_PRIVATE is a NETWORK BOUNDARY and is the first of this list that should be catalogued: it decides whether a tool may reach a private address.",
-			[]string{"PALAI_MCP_ALLOW_PRIVATE", "PALAI_MCP_SWEEP_GRACE", "PALAI_MCP_SWEEP_INTERVAL", "PALAI_MCP_TIMEOUT"}},
+		{"MCP client sweep and dial timeout. The boundary of this family — PALAI_MCP_ALLOW_PRIVATE — was catalogued on 2026-08-06 and left this list; what remains is pacing.",
+			[]string{"PALAI_MCP_SWEEP_GRACE", "PALAI_MCP_SWEEP_INTERVAL", "PALAI_MCP_TIMEOUT"}},
 		{"Inbound intake bounds: backlog, in-flight ceiling, raw retention and clock tolerance.",
 			[]string{"PALAI_INBOUND_BACKLOG_MAX", "PALAI_INBOUND_MAX_INFLIGHT", "PALAI_INBOUND_RAW_TTL", "PALAI_INBOUND_TOLERANCE"}},
-		{"A2A push posture. PALAI_A2A_PUSH_ALLOW_PRIVATE is a NETWORK BOUNDARY for the same reason the MCP one is.",
-			[]string{"PALAI_A2A_PUSH_ALLOWED_HOSTS", "PALAI_A2A_PUSH_ALLOW_PRIVATE"}},
+		{"The A2A push allow-list of destination hosts. Its sibling boundary PALAI_A2A_PUSH_ALLOW_PRIVATE was catalogued on 2026-08-06; this one is next, and it is a list rather than a switch.",
+			[]string{"PALAI_A2A_PUSH_ALLOWED_HOSTS"}},
 		{"Artifact garbage collection cadence and the grace an artifact gets before it is eligible.",
 			[]string{"PALAI_ARTIFACT_GC_GRACE", "PALAI_ARTIFACT_GC_INTERVAL"}},
 		{"The capability worker's own listener and the TTL of the job-scoped identity it hands out.",
@@ -911,6 +932,16 @@ var nonDesiredReason = map[string]string{
 		"release the operator installed and it changes when they upgrade.",
 	"PALAI_SANDBOX_IMAGE": "an IMAGE REFERENCE, for the same reason: it is the container every workspace shell call runs inside, " +
 		"with the workspace mounted. Choosing it is a supply-chain decision made at install time, not a setting.",
+
+	// --- what this deployment may DIAL ---------------------------------------------------------------
+	"PALAI_MCP_ALLOW_PRIVATE": "it widens what this deployment may DIAL. Set from a form, a reader of the " +
+		"panel could point a tool at loopback and at everything on the deployment's own network — the " +
+		"metadata service, an unauthenticated admin port, a database — and the request would leave this " +
+		"process with this process's network position. It is a bring-up decision about where the deployment " +
+		"SITS, made by whoever put it there.",
+	"PALAI_A2A_PUSH_ALLOW_PRIVATE": "the same boundary on the push path, and it is worse in one respect: a " +
+		"push destination is supplied per TASK, so a form that opened private addresses would let a caller " +
+		"choose the internal address afterwards rather than at configuration time.",
 
 	// --- a security boundary -------------------------------------------------------------------------
 	// THE REFUSAL STANDS, AND WHAT IS NEW IS THE PRICE OF LIFTING IT, measured 2026-08-03 and written here
