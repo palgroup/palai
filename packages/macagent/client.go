@@ -251,8 +251,11 @@ func (p *Prober) Probe(ctx context.Context) (Health, error) {
 			sleep(wait)
 		}
 	}
-	return health, fmt.Errorf("%w at %s after %d attempts over %s: %v — fix: install it (`palai up --native` does, "+
-		"with root or passwordless sudo), or if it is installed read /var/log/palai-agentd.log for why it is refusing to serve",
+	// The fix names the DEVICE's own verb. It used to name `palai up --native`, which is the operator
+	// CLI's stack bring-up: a machine reading this refusal is a fleet device, and telling it to run a
+	// command that raises a control plane sends somebody to install the wrong thing.
+	return health, fmt.Errorf("%w at %s after %d attempts over %s: %v — fix: `sudo palai agentd install` "+
+		"(from the archive that installed this binary), or if it is installed read /var/log/palai-agentd.log for why it is refusing to serve",
 		ErrNotAnswering, p.SocketPath, health.Attempts, p.Policy.Window(), last)
 }
 

@@ -50,6 +50,18 @@ func main() {
 		return
 	}
 
+	// ‼️ `agentd` IS THE SECOND AND LAST VERB, and it is here rather than in the operator CLI because the
+	// machine that needs it is a DEVICE. Turning on `accounts` isolation — one macOS account per session,
+	// the only isolation that is a cross-customer boundary — used to require the operator CLI on the box,
+	// which is precisely the thing §3.7 removes. It installs the daemon the device archive already carries;
+	// it never builds one, so a Mac with no checkout and no Go toolchain can do it.
+	if len(os.Args) > 1 && os.Args[1] == "agentd" {
+		if err := runAgentd(ctx, os.Args[2:], os.Stdout); err != nil {
+			log.Fatalf("%v", err)
+		}
+		return
+	}
+
 	// ‼️ BEFORE ENROLMENT, NOT AFTER. What this machine can isolate with is measured here so it travels
 	// WITH the enrolment request; a fact that arrived after the certificate was issued would describe a
 	// machine the control plane had already counted.
