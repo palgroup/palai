@@ -128,10 +128,25 @@ type RunnerPoolItem struct {
 // the decoded body so the store never sees a caller's JSON: the route validates the posture and the name,
 // and the tenant comes from the verified scope and from nowhere else.
 type RunnerPoolCreate struct {
-	Name             string
-	Posture          string
-	OS               string
-	Arch             string
+	Name    string
+	Posture string
+	OS      string
+	Arch    string
+	// Shared asks for a pool the PLANE owns: one every project on the installation may be placed onto,
+	// which is what a fleet is. False reserves it to the caller's own project.
+	//
+	// ‼️ IT IS A FIELD BECAUSE THE ALTERNATIVE WAS UNREACHABLE, and that is worth stating rather than
+	// discovering twice. The obvious spelling — "a caller whose scope names no project creates a free
+	// pool" — cannot be reached by ANY credential: coordinator.Store.VerifyAPIKey refuses a key whose
+	// project is NULL outright (ErrInvalidToken), so scope.Project is never empty on a served request.
+	// A branch no credential can take is a feature nobody has.
+	//
+	// It also has to be EXPLICIT rather than the default. Every caller here already proved the `system`
+	// capability, so defaulting to shared would read as harmless — and it would silently turn an existing
+	// operator's `create pool` into publishing hardware every other tenant's runs can land on. That is an
+	// OFFER, not a disclosure, and 000002's fleet policy withholds the same thing from the write arm for
+	// the same reason.
+	Shared           bool
 	StrictEnrollment bool
 }
 
@@ -386,21 +401,18 @@ func (h *runnerHandler) createRunnerPool(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	// scope.Project == "" CREATES A FREE POOL: one the plane owns, that every project on the installation
-	// may be placed onto. It is the ordinary case for a fleet — a device enrols once and serves everybody —
-	// and a key scoped to a project still gets a PRIVATE pool reserved to it.
-	//
-	// ‼️ THIS ROUTE USED TO ANSWER 400 HERE, and that refusal is the reason "the pool must not be
-	// project-bound" could not be configured on a shipped plane. It was not wrong when it was written: the
-	// tenant policy spelled shared as '', which runner_pools_project_id_fkey forbids, so a project-less
-	// pool really was a row nothing could enrol into. 000002's palai_apply_fleet_policy is what makes NULL
-	// readable, and deleting the 400 is the other half of the same change — a policy a human surface still
-	// refuses to exercise is a policy nobody has.
+	// ‼️ THIS ROUTE USED TO ANSWER 400 FOR A SCOPE WITH NO PROJECT, and that refusal is why "the pool must
+	// not be project-bound" could not be configured on a shipped plane. It was not wrong when written: the
+	// tenant RLS expression spelled shared as '', which runner_pools_project_id_fkey forbids, so a
+	// project-less pool really was a row nothing could enrol into. 000002's palai_apply_fleet_policy is
+	// what makes NULL readable — and `shared` below is the other half, because a policy no human surface
+	// exercises is a policy nobody has.
 	var body struct {
 		Name             string `json:"name"`
 		Posture          string `json:"posture"`
 		OS               string `json:"os"`
 		Arch             string `json:"arch"`
+		Shared           bool   `json:"shared"`
 		StrictEnrollment bool   `json:"strict_enrollment"`
 	}
 	decoder := json.NewDecoder(io.LimitReader(r.Body, 4096))
@@ -422,8 +434,16 @@ func (h *runnerHandler) createRunnerPool(w http.ResponseWriter, r *http.Request)
 			"posture must be one of sandboxed-linux, unsandboxed-host")
 		return
 	}
-	item, err := h.runners.CreateRunnerPool(r.Context(), scope.Project, RunnerPoolCreate{
+	// The owner: the plane for a shared pool, this caller's project otherwise. It is derived HERE and
+	// from the verified scope, never from the body — a caller naming another tenant's project would be
+	// creating a pool inside a boundary it did not prove.
+	owner := scope.Project
+	if body.Shared {
+		owner = ""
+	}
+	item, err := h.runners.CreateRunnerPool(r.Context(), owner, RunnerPoolCreate{
 		Name: strings.TrimSpace(body.Name), Posture: body.Posture, OS: body.OS, Arch: body.Arch,
+		Shared:           body.Shared,
 		StrictEnrollment: body.StrictEnrollment,
 	})
 	switch {
@@ -432,7 +452,7 @@ func (h *runnerHandler) createRunnerPool(w http.ResponseWriter, r *http.Request)
 		// acts differently on each: a plane-scoped caller collided with the plane's own free pools, and
 		// renaming to something the caller's project happens not to use would not help.
 		where := "this project"
-		if scope.Project == "" {
+		if body.Shared {
 			where = "the plane"
 		}
 		middleware.WriteProblem(w, r, http.StatusConflict, "already_exists",

@@ -233,13 +233,17 @@ func TestNoPoolFlagCarriesACredential(t *testing.T) {
 // what decides it, and a fake verifier is the only thing that can hand the real router a scope with no
 // project.
 func TestPoolCreateWithNoProjectScopeCreatesAFreePool(t *testing.T) {
+	// A NORMAL scope, with a project on it, because that is the ONLY scope a served request can carry:
+	// coordinator.Store.VerifyAPIKey refuses a key whose project is NULL. A fixture that handed the router
+	// an empty-project scope would be measuring a request no credential can produce — and this test was
+	// written that way for one commit, which is exactly the shape it now guards against.
 	fleet := &fakeFleet{}
-	srv := poolCLIServer(t, fleet, middleware.Scope{Scopes: []string{"provision"}})
+	srv := poolCLIServer(t, fleet, middleware.Scope{Project: "prj_1", Scopes: []string{"provision"}})
 	t.Setenv("PALAI_BASE_URL", srv.URL)
 	t.Setenv("PALAI_API_KEY", "plane-wide-key")
 
 	var out bytes.Buffer
-	if err := Run("pool", []string{"create", "--name", "free", "--posture", "unsandboxed-host"}, &out, strings.NewReader("")); err != nil {
+	if err := Run("pool", []string{"create", "--name", "free", "--posture", "unsandboxed-host", "--shared"}, &out, strings.NewReader("")); err != nil {
 		t.Fatalf("a plane-scoped key could not create a free pool: %v", err)
 	}
 	if fleet.created.Name != "free" {
@@ -248,8 +252,9 @@ func TestPoolCreateWithNoProjectScopeCreatesAFreePool(t *testing.T) {
 	// The recorded project is the whole claim: an empty one is what the statement converts to NULL, and a
 	// non-empty one would be a pool reserved to a tenant the caller never named.
 	if fleet.createdProject != "" {
-		t.Fatalf("the free pool was created inside project %q; a pool nobody asked to reserve must stay the "+
-			"plane's, or one tenant silently owns the machines every other tenant runs on", fleet.createdProject)
+		t.Fatalf("`--shared` created the pool inside project %q. The caller's own project must not become the "+
+			"owner of a pool it asked the PLANE to hold, or one tenant silently owns the machines every "+
+			"other tenant runs on", fleet.createdProject)
 	}
 }
 

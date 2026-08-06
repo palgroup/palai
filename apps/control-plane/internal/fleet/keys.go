@@ -160,6 +160,55 @@ func newKeyValue() (string, error) {
 	return "rpk_" + hex.EncodeToString(raw[:]), nil
 }
 
+// poolOwner resolves WHOSE a pool is, system-scoped, and is the authorisation input for every operation
+// below that names a pool id. "" is the PLANE's pool — a free one, that every project may run on.
+//
+// ‼️ IT EXISTS BECAUSE THE FREE POOL WAS CREATABLE AND THEN UNUSABLE. Each statement here carried the
+// caller's project as its predicate (`$2 = ” OR p.project_id = $2`), and the caller's project is never
+// empty — coordinator.Store.VerifyAPIKey refuses a key whose project is NULL. So a pool the plane owns
+// matched nothing, minting a key for it answered 404, and a fleet nobody can hand a credential to is a
+// fleet no machine can ever join. The pool existed; it could not be used.
+//
+// The read is system-scoped deliberately: the row it is asking about is one the caller may not be able to
+// see yet, and that is exactly the question being asked. What it returns is then AUTHORISED in Go before
+// any scope is published — a plane pool needs the `system` capability the route already required, and a
+// private pool must be the caller's own.
+func (k *PoolEnrollmentKeys) poolOwner(ctx context.Context, poolID string) (string, error) {
+	var owner, unusedPosture, unusedOS, unusedArch, unusedIsolation string
+	var unusedStrict bool
+	err := k.pool.QueryRow(storage.WithSystemScope(ctx), storage.Query("ResolveRunnerPool"), poolID).
+		Scan(&poolID, &owner, &unusedPosture, &unusedOS, &unusedArch, &unusedStrict, &unusedIsolation)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrUnknownPool
+	}
+	if err != nil {
+		return "", fmt.Errorf("resolve runner pool owner: %w", err)
+	}
+	return owner, nil
+}
+
+// scopeToPool authorises the caller against a pool's owner and returns the context scoped the way that
+// owner's rows are written: the SYSTEM scope for the plane's pool (000002's fleet policy admits a NULL
+// owner on the write arm only there), the tenant scope for a private one. The second return is the OWNER,
+// which the statements take as their predicate — so a caller cannot be authorised against one pool and
+// then scoped to another.
+//
+// An unknown pool and a pool belonging to somebody else are the SAME answer, so a caller cannot map the
+// installation's pools by asking for ids.
+func (k *PoolEnrollmentKeys) scopeToPool(ctx context.Context, project, poolID string) (context.Context, string, error) {
+	owner, err := k.poolOwner(ctx, poolID)
+	if err != nil {
+		return nil, "", err
+	}
+	if owner == "" {
+		return storage.WithSystemScope(ctx), "", nil
+	}
+	if owner != project {
+		return nil, "", ErrUnknownPool
+	}
+	return storage.WithTenant(ctx, owner), owner, nil
+}
+
 // Mint creates a key for one pool inside the caller's verified tenant and returns its value ONCE. The
 // pool is re-asserted against the tenant in SQL, so a caller cannot mint a credential into another
 // tenant's fleet by naming its pool id. A pool that is not the caller's (or does not exist) returns
@@ -168,14 +217,17 @@ func (k *PoolEnrollmentKeys) Mint(ctx context.Context, project, poolID string, e
 	if project == "" || poolID == "" {
 		return MintedKey{}, ErrUnknownPool
 	}
+	ctx, owner, err := k.scopeToPool(ctx, project, poolID)
+	if err != nil {
+		return MintedKey{}, err
+	}
 	value, err := newKeyValue()
 	if err != nil {
 		return MintedKey{}, err
 	}
 	out := MintedKey{Value: value}
-	ctx = storage.WithTenant(ctx, project)
 	err = k.pool.QueryRow(ctx, storage.Query("InsertRunnerPoolKey"),
-		k.mintID("rpk"), project, poolID, hashKey(value), value[:keyPrefixLength], expiresAt,
+		k.mintID("rpk"), owner, poolID, hashKey(value), value[:keyPrefixLength], expiresAt,
 	).Scan(&out.ID, &out.PoolID, &out.Prefix, &out.CreatedAt, &out.ExpiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return MintedKey{}, ErrUnknownPool
@@ -192,8 +244,21 @@ func (k *PoolEnrollmentKeys) Mint(ctx context.Context, project, poolID string, e
 // every pool's. There is no page window: an operator has a handful of pools and a handful of keys, and
 // a cursor nobody needs is a cursor to keep in step with nothing.
 func (k *PoolEnrollmentKeys) List(ctx context.Context, project, poolID string) ([]PoolKey, error) {
-	ctx = storage.WithTenant(ctx, project)
-	rows, err := k.pool.Query(ctx, storage.Query("ListRunnerPoolKeys"), project, poolID)
+	// A NAMED pool follows its owner, so the plane's keys are listable by the operator who minted them.
+	// With no pool named the listing stays the caller's own: the plane's keys and a tenant's are different
+	// inventories, and merging them into one unfiltered page would put a credential list nobody asked for
+	// in front of every operator who typed `keys list`.
+	owner := project
+	if poolID != "" {
+		var err error
+		ctx, owner, err = k.scopeToPool(ctx, project, poolID)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		ctx = storage.WithTenant(ctx, project)
+	}
+	rows, err := k.pool.Query(ctx, storage.Query("ListRunnerPoolKeys"), owner, poolID)
 	if err != nil {
 		return nil, fmt.Errorf("list runner pool keys: %w", err)
 	}
@@ -221,7 +286,27 @@ func (k *PoolEnrollmentKeys) List(ctx context.Context, project, poolID string) (
 // Idempotent: the first revoked_at is kept (the api_keys precedent). An unknown or foreign key id is
 // ErrUnknownPoolKey, so a caller learns nothing about another tenant's ids.
 func (k *PoolEnrollmentKeys) Revoke(ctx context.Context, project, keyID string) (Revocation, error) {
-	ctx = storage.WithTenant(ctx, project)
+	// The key's OWNER decides, exactly as the pool's owner decides a mint: the plane's key is closed under
+	// the system scope, a private one under its tenant's. Authorising in Go and scoping to what was
+	// authorised is what keeps "I may act on this" and "which rows I can see" one decision.
+	var owner, unusedPool string
+	err := k.pool.QueryRow(storage.WithSystemScope(ctx), storage.Query("RunnerPoolKeyOwner"), keyID).
+		Scan(&owner, &unusedPool)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Revocation{}, ErrUnknownPoolKey
+	}
+	if err != nil {
+		return Revocation{}, fmt.Errorf("resolve runner pool key owner: %w", err)
+	}
+	if owner == "" {
+		ctx = storage.WithSystemScope(ctx)
+	} else if owner == project {
+		ctx = storage.WithTenant(ctx, project)
+	} else {
+		// A foreign key and an unknown one are the same answer.
+		return Revocation{}, ErrUnknownPoolKey
+	}
+	project = owner
 	tx, err := k.pool.Begin(ctx)
 	if err != nil {
 		return Revocation{}, fmt.Errorf("begin revoke runner pool key: %w", err)

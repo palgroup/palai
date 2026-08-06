@@ -336,7 +336,12 @@ RETURNING id, pool_id, key_prefix, created_at, expires_at;
 -- The stored digest comes back with the row even though it WAS the lookup key: the caller compares it
 -- in constant time (api/tool_callbacks.go:98 takes the same position after its own keyed read), so a
 -- credential comparison in this tree never depends on a per-site argument about what leaks.
-SELECT k.id, k.project_id, k.pool_id, k.key_sha256, k.revoked_at, k.expires_at,
+-- coalesce for the reason every other projection on these four tables carries one: the database spells
+-- "no owner" NULL and Go spells it "", and the conversion happens at this boundary and nowhere else. It
+-- was MISSED here, and the cost was the whole feature: a plane pool's key scanned into a string, the
+-- redemption returned an unrecognised error, and the gateway answered a machine 503 "enrollment could
+-- not be resolved" — the exact message it reserves for a database that cannot answer.
+SELECT k.id, coalesce(k.project_id, '') AS project_id, k.pool_id, k.key_sha256, k.revoked_at, k.expires_at,
        p.posture, p.strict_enrollment
   FROM runner_pool_keys k
   JOIN runner_pools p ON p.id = k.pool_id
@@ -360,6 +365,18 @@ SELECT k.id, k.pool_id, k.key_prefix, k.created_at, k.expires_at, k.revoked_at, 
    AND ($2 = '' OR k.pool_id = $2)
  ORDER BY k.created_at DESC, k.id DESC;
 
+-- name: RunnerPoolKeyOwner
+-- WHOSE a key is, read SYSTEM-SCOPED, and it is the authorisation input for the revoke below rather than
+-- an answer to any caller: '' is the PLANE's key, minted for a pool no project owns.
+--
+-- It exists because a key on a free pool could not be REVOKED. The revoke's predicate is the caller's own
+-- project and a caller's project is never empty (VerifyAPIKey refuses a NULL one), so a plane key matched
+-- nothing and answered "no such key" — a credential that admits machines to the whole installation and
+-- that no operator could close. That is SAN-011's hard stop missing on exactly the pool a fleet uses.
+SELECT coalesce(project_id, ''), pool_id
+  FROM runner_pool_keys
+ WHERE id = $1;
+
 -- name: RevokeRunnerPoolKey
 -- Close the door. Idempotent (the first revoked_at is kept, the api_keys precedent) and tenant-scoped,
 -- so another tenant's key id is simply not found. It touches NOTHING about the machines this key
@@ -368,6 +385,7 @@ SELECT k.id, k.pool_id, k.key_prefix, k.created_at, k.expires_at, k.revoked_at, 
 UPDATE runner_pool_keys
    SET revoked_at = coalesce(revoked_at, $3)
  WHERE id = $1 AND ($2 = '' OR project_id = $2)
+   AND ($2 <> '' OR project_id IS NULL)
 RETURNING id, pool_id, key_prefix, created_at, expires_at, revoked_at, last_used_at;
 
 -- name: ListRunnersEnrolledViaKey
@@ -395,15 +413,31 @@ SELECT id, label, runner_dns, state, pool_id, enrolled_at, last_seen_at
 --
 -- The third column exists because fleet.DefaultPoolID is a CONSTANT: it is the bootstrap tenant's pool
 -- id, so before this every other tenant that had configured nothing resolved to a pool belonging to
--- somebody else. The subselect is the tenant's own 'default' pool — the row identity.Store.provision
--- seeds with every organization — and '' when it has none, which leaves the constant as the last
+-- somebody else. It is '' when neither candidate below exists, which leaves the constant as the last
 -- resort exactly as it was.
+--
+-- ‼️ TWO CANDIDATES, ORDERED BY WHETHER A POOL HAS ANY MACHINE AT ALL, and that first key is what makes
+-- the free fleet reachable rather than decorative. identity.Store.provision seeds EVERY project with a
+-- 'default' pool, so a rule that simply preferred the tenant's own would resolve to it on every
+-- installation that exists — and a project whose seeded pool nobody ever enrolled a machine into would
+-- park every run forever while the plane's own Macs sat idle. The free pool would be a row nothing
+-- could ever be placed on.
+--
+-- It is EXISTS-a-machine and not "is one online", deliberately. A pool with no runner row is a pool
+-- nobody ever gave this project; a pool whose machine is briefly offline is still that project's
+-- hardware, and spilling its work onto shared Macs the moment a Mac reboots would be a tenancy surprise
+-- nobody asked for. The second key keeps the tenant's own ahead of the plane's when both are empty, so
+-- an installation with no free pool behaves exactly as it did.
+--
+-- The ORDER BY is total: at most one 'default' pool exists per project (runner_pools_name_key) and at
+-- most one on the plane (runner_pools_free_name_key), so the two keys never tie.
 SELECT r.pool_id, r.created_at,
        coalesce((SELECT p.id
                    FROM runner_pools p
                   WHERE p.name = 'default'
                     AND (p.project_id = $2 OR p.project_id IS NULL)
-                  ORDER BY (p.project_id IS NULL)
+                  ORDER BY (NOT EXISTS (SELECT 1 FROM runners r WHERE r.pool_id = p.id)),
+                           (p.project_id IS NULL)
                   LIMIT 1), '')
   FROM runs r
  WHERE r.id = $1 AND r.project_id = $2;

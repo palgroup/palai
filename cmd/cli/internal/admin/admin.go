@@ -89,6 +89,7 @@ type flags struct {
 	osName        string
 	arch          string
 	strict        bool
+	shared        bool
 	// The E29 model-wiring flags. Every one is a PUBLIC fact — a family name, a secret REF name, a URL, a
 	// model id. None can carry a credential, and admin_test.go's TestModelFlagsCarryNoCredential is what
 	// keeps the next one from doing so.
@@ -140,6 +141,7 @@ func (f *flags) register(fs *flag.FlagSet, resource string) {
 		fs.StringVar(&f.osName, "os", "", "the OS machines in this pool report, e.g. darwin (create, optional)")
 		fs.StringVar(&f.arch, "arch", "", "the architecture machines in this pool report, e.g. arm64 (create, optional)")
 		fs.BoolVar(&f.strict, "strict", false, "enrolling into this pool needs a human approval (create, set-strict) — omit on set-strict to close the waiting room")
+		fs.BoolVar(&f.shared, "shared", false, "the PLANE owns this pool: every project on the installation may be placed onto it (create). Omitted, the pool is reserved to this key's project")
 	case "poolkey":
 		// There is deliberately no flag carrying a key value: a pool key only ever comes OUT of `create`,
 		// and everything else names it by id. Nothing here can put a credential in argv.
@@ -392,7 +394,7 @@ func (c *Client) execute(resource, sub string, pos []string, f *flags) error {
 				return errors.New("pool create requires --name <n> and --posture <sandboxed-linux|unsandboxed-host> (a pool IS a posture, so there is no default)")
 			}
 			b := map[string]any{
-				"name": f.name, "posture": f.posture, "strict_enrollment": f.strict,
+				"name": f.name, "posture": f.posture, "strict_enrollment": f.strict, "shared": f.shared,
 			}
 			if f.osName != "" {
 				b["os"] = f.osName

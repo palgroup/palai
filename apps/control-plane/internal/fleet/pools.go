@@ -120,14 +120,26 @@ var ErrPoolNameTaken = errors.New("fleet: a runner pool with that name already e
 // is the only tenant authority, so it publishes it and RLS confines it. Register runs system-scoped because
 // the enrolment wire genuinely carries no tenant; an operator's request does.
 func (s *Store) CreatePool(ctx context.Context, project string, in Pool) (Pool, error) {
-	// project == "" creates a FREE pool: one the plane owns and every project may run on. It is reachable
-	// only from a system-scoped caller, because a tenant-scoped request publishes its own project and
-	// cannot present the empty one -- so a tenant cannot mint a pool outside its own boundary.
 	row := Pool{
 		ID: s.mintID("pool"), Project: project, Name: in.Name,
 		Posture: in.Posture, OS: in.OS, Arch: in.Arch, StrictEnrollment: in.StrictEnrollment,
 	}
-	ctx = storage.WithTenant(ctx, project)
+	// ‼️ THE SCOPE FOLLOWS THE OWNER, and the two arms are not interchangeable.
+	//
+	// project == "" is a FREE pool: one the plane owns and every project may run on. It is written under
+	// the SYSTEM scope, and that is the same rule 000002's fleet policy enforces from the other side — its
+	// WITH CHECK admits a NULL owner only for a system-scoped connection, so a tenant cannot mint hardware
+	// that other tenants' runs land on. The route is what proves the caller may ask: `shared` is only
+	// reachable behind the `system` capability.
+	//
+	// It cannot simply publish the empty project instead: storage.PrepareConn REFUSES a tenant scope with
+	// no project outright, so `WithTenant(ctx, "")` fails the acquisition and the route answers 500 — which
+	// is exactly what it did until this line existed.
+	if project == "" {
+		ctx = storage.WithSystemScope(ctx)
+	} else {
+		ctx = storage.WithTenant(ctx, project)
+	}
 	err := s.pool.QueryRow(ctx, storage.Query("InsertRunnerPool"),
 		row.ID, row.Project, row.Name, row.Posture, row.OS, row.Arch, row.StrictEnrollment).
 		Scan(&row.CreatedAt)
