@@ -75,6 +75,21 @@ func ReleaseTag() (string, bool) {
 	return tag, true
 }
 
+// IsRelease reports whether v is a stamp the §48.2 window can compare — a dotted numeric version,
+// with or without a leading "v" and a git-describe/build-metadata suffix. It is false for "dev", a
+// bare VCS hash and the empty string.
+//
+// ‼️ IT EXISTS FOR THE PACKAGER'S REFUSAL, and that refusal exists because Supported is FAIL-OPEN for
+// an unstamped build. A device archive whose binary reported "dev" would connect to any control-plane
+// forever: the window would skip the comparison, the fleet would show one version for every machine,
+// and a desired-version rollout could never tell a machine that had updated from one that had not. The
+// packager gates on the same rule with a coarse pattern, and scripts/package/runner/stamp_test.go binds
+// the two so they cannot drift apart.
+func IsRelease(v string) bool {
+	_, _, ok := parse(v)
+	return ok
+}
+
 // supportedMinorLookback is the §48.2 window depth: a control-plane serves its current minor and the
 // previous this-many minors (current + previous two). A runner more than this many minors behind must
 // hop through an intermediate release first.

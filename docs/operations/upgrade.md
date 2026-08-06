@@ -159,7 +159,7 @@ control-plane / runner / engine image digests. `palai upgrade` reads it to know 
 Alongside it the build emits **`release-index.json`** — every artifact of the release matrix (CLI for
 darwin/linux × amd64/arm64, the runner host package per arch, and one image tar per
 `linux/amd64`+`linux/arm64` image) with its `kind`, `arch` and its **sha256 digest recomputed from the
-artifact's bytes**. Restrict the matrix with `--platforms`, `--cli-targets` and `--runner-archs` (an
+artifact's bytes**. Restrict the matrix with `--platforms`, `--cli-targets` and `--agent-targets` (an
 upgrade drill wants host-only). Binaries are **bit-reproducible**: the same commit rebuilds to the same
 digests, from `-trimpath -buildvcs=false -ldflags "-s -w -buildid="` (a Go binary embeds no build
 timestamp) plus the fixed tar mtime the runner packager already stamps. `SOURCE_DATE_EPOCH` (default: the

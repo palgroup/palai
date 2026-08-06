@@ -82,7 +82,7 @@ OUT="$pkgout" ARCH="$arch" bash "$root/scripts/package/runner/build.sh" >/dev/nu
 tarball="$(cd "$pkgout" && ls palai-*-linux-*.tar.gz)"
 # In this local proof the emitted pubkey IS the trusted key (same session, no channel attacker);
 # a real operator passes a key obtained out of band instead of the one beside the tarball.
-( cd "$pkgout" && ./verify.sh "$tarball" palai-runner-signing.pub ) >&2
+( cd "$pkgout" && ./verify.sh "$tarball" "${tarball}.pub" ) >&2
 mkdir -p "$extract"
 tar -xzf "$pkgout/$tarball" -C "$extract"
 

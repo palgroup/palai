@@ -131,8 +131,10 @@ compose_up() { # engine_digest cp_image runner_image [extra env KEY=VAL ...]
 # matrix itself is proven by scripts/release/repro_test.go + the E18 T1 evidence, not here.
 host_arch="$(go env GOARCH)"
 log "build N+1 images + stamped CLI via scripts/release/build.sh (tag n1-$short, host-only linux/$host_arch)"
-./scripts/release/build.sh --tag "n1-$short" --out "$WORK/n1" \
-  --platforms "linux/$host_arch" --cli-targets "$(go env GOOS)/$host_arch" --runner-archs "$host_arch" >&2
+# N+1 is the CURRENT tree, dirty or not: the drill exists to test an upgrade from a work in progress.
+PALAI_RELEASE_ALLOW_DIRTY=1 ./scripts/release/build.sh --tag "n1-$short" --out "$WORK/n1" \
+  --platforms "linux/$host_arch" --cli-targets "$(go env GOOS)/$host_arch" \
+  --agent-targets "$(go env GOOS)/$host_arch" >&2
 [ -x "$CLI" ] || fail "build.sh did not produce the stamped CLI"
 "$CLI" version >&2
 cp_n1="palai/control-plane:n1-$short"; runner_n1="palai/runner:n1-$short"; engine_n1="palai/reference-engine:n1-$short"

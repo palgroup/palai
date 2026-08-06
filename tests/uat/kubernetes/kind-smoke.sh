@@ -258,7 +258,7 @@ step "enroll the SIGNED E14 runner package from the host (outbound-only, SAN con
 pkgout="$work/pkg"; extract="$work/extract"
 OUT="$pkgout" ARCH="$(docker version --format '{{.Server.Arch}}')" bash "$root/scripts/package/runner/build.sh" >/dev/null
 tarball="$(cd "$pkgout" && ls palai-*-linux-*.tar.gz)"
-( cd "$pkgout" && ./verify.sh "$tarball" palai-runner-signing.pub ) >&2
+( cd "$pkgout" && ./verify.sh "$tarball" "${tarball}.pub" ) >&2
 mkdir -p "$extract"; tar -xzf "$pkgout/$tarball" -C "$extract"
 printf '%s' "$runner_token" >"$work/runner-token"
 docker run -d --name "$runner_ctr" --label "io.palai.project=$cluster" \

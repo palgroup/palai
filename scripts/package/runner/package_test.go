@@ -67,7 +67,7 @@ func build(t *testing.T, out string) string {
 // pubkeyOf is the public key build.sh emitted beside the tarball. In these tests it stands in for
 // the operator's OUT-OF-BAND trusted key (same trusted session, no channel attacker); verify.sh
 // itself refuses to default to it (TestVerifyRequiresExplicitOutOfBandKey).
-func pubkeyOf(out string) string { return filepath.Join(out, "palai-runner-signing.pub") }
+func pubkeyOf(tarball string) string { return tarball + ".pub" }
 
 func sha256File(t *testing.T, p string) string {
 	t.Helper()
@@ -121,7 +121,7 @@ func TestPackageBuildsVerifiesAndIsDeterministic(t *testing.T) {
 	}
 
 	// verify.sh accepts the freshly signed package against its (out-of-band) key.
-	if ok, out := verify(t, tarball1, pubkeyOf(out1)); !ok {
+	if ok, out := verify(t, tarball1, pubkeyOf(tarball1)); !ok {
 		t.Fatalf("verify.sh rejected a freshly built package:\n%s", out)
 	}
 
@@ -141,14 +141,14 @@ func TestVerifyFailsOnTamperedTarball(t *testing.T) {
 	name := build(t, out)
 	tarball := filepath.Join(out, name)
 
-	if ok, o := verify(t, tarball, pubkeyOf(out)); !ok {
+	if ok, o := verify(t, tarball, pubkeyOf(tarball)); !ok {
 		t.Fatalf("baseline verify failed:\n%s", o)
 	}
 
 	// Flip a single byte, leaving manifest+sig+key untouched — download-corruption / tamper.
 	flipByte(t, tarball)
 
-	if ok, o := verify(t, tarball, pubkeyOf(out)); ok {
+	if ok, o := verify(t, tarball, pubkeyOf(tarball)); ok {
 		t.Fatalf("verify.sh PASSED a tampered tarball — it must fail closed:\n%s", o)
 	}
 }
@@ -168,7 +168,7 @@ func TestVerifyRejectsReshaTamper(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if ok, o := verify(t, tarball, pubkeyOf(out)); ok {
+	if ok, o := verify(t, tarball, pubkeyOf(tarball)); ok {
 		t.Fatalf("verify.sh PASSED a re-sha'd tampered tarball — the signature must catch it:\n%s", o)
 	}
 }

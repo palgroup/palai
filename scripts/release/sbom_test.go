@@ -633,8 +633,9 @@ func TestSBOMPipelineLive(t *testing.T) {
 
 	out := t.TempDir()
 	build := exec.Command("/usr/bin/env", "bash", filepath.Join(root, "scripts/release/build.sh"),
-		"--no-images", "--out", out, "--cli-targets", "linux/arm64", "--runner-archs", "arm64")
+		"--no-images", "--out", out, "--cli-targets", "linux/arm64", "--agent-targets", "linux/arm64")
 	build.Dir = root
+	build.Env = append(os.Environ(), scratchBuild...)
 	if b, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build.sh: %v\n%s", err, b)
 	}

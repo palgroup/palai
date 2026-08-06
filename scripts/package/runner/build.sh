@@ -27,6 +27,22 @@ ARCH="${ARCH:-amd64}"
 # so this producer answers that name rather than the host-package one it used to. A Mac fleet cannot be
 # served by a builder that only knows linux.
 OS="${OS:-linux}"
+# ‼️ THE STAMP GOES INTO THE BINARY, AND A PACKAGE WITHOUT ONE IS REFUSED HERE. Until 2026-08-06 this
+# compile passed neither -X version.Stamp nor build VCS info, so every packaged agent resolved its own
+# version to "dev" — and version.Supported is FAIL-OPEN for an unstamped build. The §48.2 support window
+# that cmd/runner's own comment says it advertises for could therefore never fire on the artifact a
+# fleet actually installs, every machine read one version in the panel, and a desired-version rollout
+# had nothing to compare. A release passes STAMP (the same "<version>+g<describe>" it stamps the CLI
+# with); a standalone build falls back to VERSION, which is already a release-shaped number.
+STAMP="${STAMP:-$VERSION}"
+# Coarse form of packages/version.IsRelease — a dotted numeric version, optional leading v, optional
+# git-describe/build-metadata suffix. stamp_test.go runs this script over the same table that function
+# judges, so the two rules cannot drift apart.
+if ! printf '%s' "$STAMP" | grep -Eq '^v?[0-9]+\.[0-9]+([.+-].*)?$'; then
+	echo "build: REFUSED: STAMP '$STAMP' is not a release version — a package that reports an" >&2
+	echo "  unstamped version is exempt from the support window on every machine it is installed on" >&2
+	exit 2
+fi
 # Fixed mtime for every archive member (touch -t format) → reproducible tar.
 MTIME='202601010000.00'
 
@@ -42,9 +58,11 @@ trap 'rm -rf "$stage"' EXIT
 # GOPROXY=off + -mod=readonly (E18 T1): the compile is offline against the warmed, go.sum-pinned
 # module cache, which is what lets the release index claim hermeticity for the host package too. A
 # cold cache fails here ("module lookup disabled by GOPROXY=off") rather than fetching.
-echo "build: cross-compiling cmd/runner (${OS}/${ARCH}) as palai" >&2
+echo "build: cross-compiling cmd/runner (${OS}/${ARCH}) as palai at ${STAMP}" >&2
 ( cd "$root" && CGO_ENABLED=0 GOOS="$OS" GOARCH="$ARCH" GOPROXY=off GOFLAGS=-mod=readonly \
-	go build -trimpath -buildvcs=false -ldflags='-s -w' -o "$stage/palai" ./cmd/runner )
+	go build -trimpath -buildvcs=false \
+	-ldflags="-s -w -buildid= -X github.com/palgroup/palai/packages/version.Stamp=${STAMP}" \
+	-o "$stage/palai" ./cmd/runner )
 
 # Stage the package members FLAT (no subdirs, so tar member order is fully controlled).
 here="$root/scripts/package/runner"
@@ -105,7 +123,15 @@ else
 	openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$signing_key" 2>/dev/null
 	echo "build: no PALAI_RUNNER_SIGNING_KEY set — generated an EPHEMERAL signing key (local proof only)" >&2
 fi
-openssl pkey -in "$signing_key" -pubout -out "$out/palai-runner-signing.pub"
+# ‼️ THE PUBLIC KEY IS NAMED FOR ITS ARTIFACT, AND THAT IS WHAT MAKES A MULTI-TARGET DIRECTORY HONEST.
+# One version's four archives share a directory so they can share `checksums.txt`; a single
+# `palai-runner-signing.pub` in it would be OVERWRITTEN by each invocation, leaving one key beside four
+# signatures — three of which it cannot verify. With no operator key set each invocation signs with its
+# OWN ephemeral key, so the collision is not theoretical: it silently reduces three of four artifacts to
+# unverifiable. Per-artifact naming makes the sibling set (`.sha256`, `.sig`, `.pub`) complete for each
+# archive on its own. The convenience copy is still NOT a trust root — verify.sh takes the key it trusts
+# from out of band, and passing this one back to it proves nothing.
+openssl pkey -in "$signing_key" -pubout -out "$out/${tarball}.pub"
 openssl dgst -sha256 -sign "$signing_key" -out "$out/${tarball}.sig" "$out/$tarball"
 
 # Ship the verify script beside the artifacts.
@@ -113,6 +139,6 @@ cp "$here/verify.sh" "$out/verify.sh"
 chmod 0755 "$out/verify.sh"
 
 echo "build: wrote to $out:" >&2
-( cd "$out" && ls -1 "$tarball" "${tarball}.sha256" "${tarball}.sig" palai-runner-signing.pub verify.sh >&2 )
+( cd "$out" && ls -1 "$tarball" "${tarball}.sha256" "${tarball}.sig" "${tarball}.pub" verify.sh >&2 )
 # Emit the tarball name on stdout so callers (package_test.go) can locate it.
 echo "$tarball"

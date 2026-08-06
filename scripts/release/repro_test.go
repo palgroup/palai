@@ -24,7 +24,13 @@ import (
 // runner host package. The FULL matrix (darwin/linux × amd64/arm64 + per-arch host packages +
 // multi-arch images) is the operator/release invocation — the machinery is identical, and a
 // reduced matrix keeps this inside `go test ./...`.
-var reducedMatrix = []string{"--cli-targets", "darwin/arm64", "--runner-archs", "arm64"}
+var reducedMatrix = []string{"--cli-targets", "darwin/arm64", "--agent-targets", "darwin/arm64"}
+
+// scratchBuild declares what every build in this package is. build.sh REFUSES a dirty working tree,
+// because "<version>+g<commit>-dirty" is the same stamp for any two trees sitting on that commit — and
+// that stamp is what a device reports to the fleet. These tests build from whatever tree the developer
+// has checked out, so they say so explicitly rather than passing because CI happened to be clean.
+var scratchBuild = []string{"PALAI_RELEASE_ALLOW_DIRTY=1"}
 
 type indexArtifact struct {
 	Kind       string  `json:"kind"`
@@ -57,6 +63,7 @@ func buildRelease(t *testing.T, args ...string) (string, releaseIndex) {
 		"--out", out, "--no-images", "--version", "18.0.0"}, args...)
 	cmd := exec.Command("/usr/bin/env", append([]string{"bash"}, argv...)...)
 	cmd.Dir = repoRoot(t)
+	cmd.Env = append(os.Environ(), scratchBuild...)
 	if combined, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("build.sh %v: %v\n%s", args, err, combined)
 	}
@@ -233,7 +240,7 @@ func TestReleaseIndexShape(t *testing.T) {
 			t.Errorf("artifact %s: index digest %s is not the artifact's bytes (%s)", a.File, a.Digest, got)
 		}
 	}
-	for _, kind := range []string{"cli", "runner-host-package"} {
+	for _, kind := range []string{"cli", "device-agent"} {
 		if kinds[kind] == 0 {
 			t.Errorf("release-index lists no %q artifact (kinds seen: %v)", kind, kinds)
 		}

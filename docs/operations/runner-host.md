@@ -34,14 +34,15 @@ the runner on a SEPARATE Docker network reaching the gateway's published port.
 ARCH=amd64 scripts/package/runner/build.sh
 ```
 
-This writes, under `dist/runner-package/`:
+This writes, under `dist/runner-package/` (a release writes every target into one `device/` directory
+so they share `checksums.txt`):
 
 | Artifact | What it is |
 |---|---|
-| `palai-runner-host-<ver>-linux-<arch>.tar.gz` | the deterministic tarball (binary + unit + launcher + env template + this doc) |
+| `palai-<ver>-<os>-<arch>.tar.gz` | the deterministic tarball (the `palai` binary; on linux also the unit + launcher + env template + this doc) |
 | `…​.tar.gz.sha256` | the sha256 manifest |
 | `…​.tar.gz.sig` | the detached `openssl dgst -sha256` signature |
-| `palai-runner-signing.pub` | a COPY of the signing public key (convenience only — see the trust model below; do NOT trust this copy) |
+| `…​.tar.gz.pub` | a COPY of the key that signed THIS archive (convenience only — see the trust model below; do NOT trust this copy) |
 | `verify.sh` | the verify script (below) |
 
 The tarball is deterministic: the linux binary is built `-trimpath`, every member is stamped to a
@@ -54,19 +55,19 @@ already a build dependency (T1 mints the edge/CA certs with it), so no new tool 
 
 The signature is only as good as the public key you check it against. A channel attacker can swap
 the tarball, its `.sig`, AND its `.sha256` in one move and re-sign with their own key — so the
-`palai-runner-signing.pub` sitting BESIDE the tarball proves nothing. Obtain the real public key
+`.tar.gz.pub` sitting BESIDE the tarball proves nothing. Obtain the real public key
 (or its sha256 fingerprint) from a SEPARATE trusted channel — the project's release page, your
 config-management, a keyserver — and pass it explicitly. `verify.sh` has no sibling-key default and
 fails closed without one.
 
 ```sh
 # Get the trusted key out of band, then:
-./verify.sh palai-runner-host-*.tar.gz /path/to/trusted-signing.pub
-# verify: OK — sha256 and signature verified for palai-runner-host-…tar.gz against …
+./verify.sh palai-*-linux-*.tar.gz /path/to/trusted-signing.pub
+# verify: OK — sha256 and signature verified for palai-…-linux-….tar.gz against …
 
 # Optional belt-and-suspenders: pin the key's fingerprint (distribute the 64-hex value out of band).
 PALAI_RUNNER_PUBKEY_FINGERPRINT=$(sha256sum trusted-signing.pub | cut -d' ' -f1) \
-  ./verify.sh palai-runner-host-*.tar.gz /path/to/trusted-signing.pub
+  ./verify.sh palai-*-linux-*.tar.gz /path/to/trusted-signing.pub
 ```
 
 `verify.sh` recomputes the tarball sha256 against the manifest AND checks the detached signature
@@ -87,9 +88,9 @@ sudo useradd --system --no-create-home --shell /usr/sbin/nologin palai-runner
 sudo usermod -aG docker palai-runner
 
 # 1. Verify against the OUT-OF-BAND key (not the .pub in the package), then extract to /opt/palai-runner.
-./verify.sh palai-runner-host-*.tar.gz /path/to/trusted-signing.pub
+./verify.sh palai-*-linux-*.tar.gz /path/to/trusted-signing.pub
 sudo mkdir -p /opt/palai-runner /etc/palai/runner
-sudo tar -xzf palai-runner-host-*.tar.gz -C /opt/palai-runner
+sudo tar -xzf palai-*-linux-*.tar.gz -C /opt/palai-runner
 
 # 2. Copy the controller CA + a FRESH enrollment token from the control-plane host. The token is
 #    re-presentable (it is how a runner recovers an expired identity), not one-use.

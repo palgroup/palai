@@ -15,51 +15,270 @@
     "not-tested": "—",
     "not-applicable": "n/a"
   },
-  "platforms": ["linux/amd64", "linux/arm64", "darwin/amd64", "darwin/arm64"],
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64",
+    "darwin/amd64",
+    "darwin/arm64"
+  ],
   "surfaces": [
-    {"id": "container-images", "label": "Service container images (control-plane, runner, reference-engine)"},
-    {"id": "local-compose", "label": "Local four-service compose stack (`palai local up`)"},
-    {"id": "production-compose", "label": "Production single-node compose behind the TLS edge"},
-    {"id": "kubernetes-helm", "label": "Kubernetes via the restricted Helm chart (runner outside the cluster)"},
-    {"id": "air-gap", "label": "Offline signed air-gap bundle install"},
-    {"id": "runner-host-package", "label": "Runner host package on a separate host"},
-    {"id": "cli", "label": "`palai` CLI on an operator workstation"}
+    {
+      "id": "container-images",
+      "label": "Service container images (control-plane, runner, reference-engine)"
+    },
+    {
+      "id": "local-compose",
+      "label": "Local four-service compose stack (`palai local up`)"
+    },
+    {
+      "id": "production-compose",
+      "label": "Production single-node compose behind the TLS edge"
+    },
+    {
+      "id": "kubernetes-helm",
+      "label": "Kubernetes via the restricted Helm chart (runner outside the cluster)"
+    },
+    {
+      "id": "air-gap",
+      "label": "Offline signed air-gap bundle install"
+    },
+    {
+      "id": "device-agent",
+      "label": "Device agent (`install.sh` + `palai enroll`)"
+    },
+    {
+      "id": "cli",
+      "label": "`palai` CLI on an operator workstation"
+    }
   ],
   "cells": [
-    {"surface": "container-images", "platform": "linux/arm64", "level": "tested", "proof": ["LP-009", "TestReleaseBuildIsBitReproducible"]},
-    {"surface": "container-images", "platform": "linux/amd64", "level": "build-only", "proof": ["TestReleaseIndexShape", "make:release-matrix-smoke"], "note": "Built by the buildx matrix and boot-smoked under emulation. A boot-smoke is NOT a UAT run (E18 §6 leg 3)."},
-    {"surface": "container-images", "platform": "darwin/amd64", "level": "not-applicable", "proof": []},
-    {"surface": "container-images", "platform": "darwin/arm64", "level": "not-applicable", "proof": []},
-
-    {"surface": "local-compose", "platform": "linux/arm64", "level": "tested", "proof": ["LP-009", "LP-012", "LP-013"], "note": "Every runbook transcript in docs/operations/runbooks/transcripts was recorded here."},
-    {"surface": "local-compose", "platform": "linux/amd64", "level": "build-only", "proof": ["make:release-matrix-smoke"]},
-    {"surface": "local-compose", "platform": "darwin/amd64", "level": "not-applicable", "proof": []},
-    {"surface": "local-compose", "platform": "darwin/arm64", "level": "not-applicable", "proof": []},
-
-    {"surface": "production-compose", "platform": "linux/arm64", "level": "tested", "proof": ["OPS-002", "DR-002", "DR-004"], "note": "The E14 self-host journey: clean install, CA-verified TLS edge, admin provisioning through the edge, a real provider run, backup and restore into a separate clean stack."},
-    {"surface": "production-compose", "platform": "linux/amd64", "level": "not-tested", "proof": []},
-    {"surface": "production-compose", "platform": "darwin/amd64", "level": "not-applicable", "proof": []},
-    {"surface": "production-compose", "platform": "darwin/arm64", "level": "not-applicable", "proof": []},
-
-    {"surface": "kubernetes-helm", "platform": "linux/arm64", "level": "tested", "proof": ["OPS-003", "TestNoClusterRole", "TestNetworkPolicyDefaultDeny", "make:uat-kind"], "note": "On a kind cluster. kindnet does NOT enforce NetworkPolicy, so default-deny is proven as a RENDER, not as enforcement — a real enforcing CNI is E15 §6 leg 1."},
-    {"surface": "kubernetes-helm", "platform": "linux/amd64", "level": "not-tested", "proof": []},
-    {"surface": "kubernetes-helm", "platform": "darwin/amd64", "level": "not-applicable", "proof": []},
-    {"surface": "kubernetes-helm", "platform": "darwin/arm64", "level": "not-applicable", "proof": []},
-
-    {"surface": "air-gap", "platform": "linux/arm64", "level": "tested", "proof": ["OPS-004"], "note": "Offline verify plus tamper rejection on an internal Docker network. A physical air-gapped facility with an operator trust-root ceremony is E15 §6 leg 2."},
-    {"surface": "air-gap", "platform": "linux/amd64", "level": "not-tested", "proof": []},
-    {"surface": "air-gap", "platform": "darwin/amd64", "level": "not-applicable", "proof": []},
-    {"surface": "air-gap", "platform": "darwin/arm64", "level": "not-applicable", "proof": []},
-
-    {"surface": "runner-host-package", "platform": "linux/arm64", "level": "build-only", "proof": ["LP-007", "TestReleaseIndexShape"], "note": "The package is built per-arch and signature-verified, and mTLS enrollment is proven over the compose network (LP-007) — but on the SAME host. A separate physical host with systemd is E14 §6 leg 3."},
-    {"surface": "runner-host-package", "platform": "linux/amd64", "level": "build-only", "proof": ["TestReleaseIndexShape"]},
-    {"surface": "runner-host-package", "platform": "darwin/amd64", "level": "not-applicable", "proof": []},
-    {"surface": "runner-host-package", "platform": "darwin/arm64", "level": "not-applicable", "proof": []},
-
-    {"surface": "cli", "platform": "darwin/arm64", "level": "tested", "proof": ["API-012", "LP-012", "OPS-002"], "note": "Every CLI command in the runbooks was executed here."},
-    {"surface": "cli", "platform": "darwin/amd64", "level": "build-only", "proof": ["TestReleaseIndexShape", "TestReleaseBinariesAreTrimpathedAndPathFree"]},
-    {"surface": "cli", "platform": "linux/arm64", "level": "build-only", "proof": ["TestReleaseIndexShape", "TestReleaseBinariesAreTrimpathedAndPathFree"]},
-    {"surface": "cli", "platform": "linux/amd64", "level": "build-only", "proof": ["TestReleaseIndexShape", "TestReleaseBinariesAreTrimpathedAndPathFree"]}
+    {
+      "surface": "container-images",
+      "platform": "linux/arm64",
+      "level": "tested",
+      "proof": [
+        "LP-009",
+        "TestReleaseBuildIsBitReproducible"
+      ]
+    },
+    {
+      "surface": "container-images",
+      "platform": "linux/amd64",
+      "level": "build-only",
+      "proof": [
+        "TestReleaseIndexShape",
+        "make:release-matrix-smoke"
+      ],
+      "note": "Built by the buildx matrix and boot-smoked under emulation. A boot-smoke is NOT a UAT run (E18 §6 leg 3)."
+    },
+    {
+      "surface": "container-images",
+      "platform": "darwin/amd64",
+      "level": "not-applicable",
+      "proof": []
+    },
+    {
+      "surface": "container-images",
+      "platform": "darwin/arm64",
+      "level": "not-applicable",
+      "proof": []
+    },
+    {
+      "surface": "local-compose",
+      "platform": "linux/arm64",
+      "level": "tested",
+      "proof": [
+        "LP-009",
+        "LP-012",
+        "LP-013"
+      ],
+      "note": "Every runbook transcript in docs/operations/runbooks/transcripts was recorded here."
+    },
+    {
+      "surface": "local-compose",
+      "platform": "linux/amd64",
+      "level": "build-only",
+      "proof": [
+        "make:release-matrix-smoke"
+      ]
+    },
+    {
+      "surface": "local-compose",
+      "platform": "darwin/amd64",
+      "level": "not-applicable",
+      "proof": []
+    },
+    {
+      "surface": "local-compose",
+      "platform": "darwin/arm64",
+      "level": "not-applicable",
+      "proof": []
+    },
+    {
+      "surface": "production-compose",
+      "platform": "linux/arm64",
+      "level": "tested",
+      "proof": [
+        "OPS-002",
+        "DR-002",
+        "DR-004"
+      ],
+      "note": "The E14 self-host journey: clean install, CA-verified TLS edge, admin provisioning through the edge, a real provider run, backup and restore into a separate clean stack."
+    },
+    {
+      "surface": "production-compose",
+      "platform": "linux/amd64",
+      "level": "not-tested",
+      "proof": []
+    },
+    {
+      "surface": "production-compose",
+      "platform": "darwin/amd64",
+      "level": "not-applicable",
+      "proof": []
+    },
+    {
+      "surface": "production-compose",
+      "platform": "darwin/arm64",
+      "level": "not-applicable",
+      "proof": []
+    },
+    {
+      "surface": "kubernetes-helm",
+      "platform": "linux/arm64",
+      "level": "tested",
+      "proof": [
+        "OPS-003",
+        "TestNoClusterRole",
+        "TestNetworkPolicyDefaultDeny",
+        "make:uat-kind"
+      ],
+      "note": "On a kind cluster. kindnet does NOT enforce NetworkPolicy, so default-deny is proven as a RENDER, not as enforcement — a real enforcing CNI is E15 §6 leg 1."
+    },
+    {
+      "surface": "kubernetes-helm",
+      "platform": "linux/amd64",
+      "level": "not-tested",
+      "proof": []
+    },
+    {
+      "surface": "kubernetes-helm",
+      "platform": "darwin/amd64",
+      "level": "not-applicable",
+      "proof": []
+    },
+    {
+      "surface": "kubernetes-helm",
+      "platform": "darwin/arm64",
+      "level": "not-applicable",
+      "proof": []
+    },
+    {
+      "surface": "air-gap",
+      "platform": "linux/arm64",
+      "level": "tested",
+      "proof": [
+        "OPS-004"
+      ],
+      "note": "Offline verify plus tamper rejection on an internal Docker network. A physical air-gapped facility with an operator trust-root ceremony is E15 §6 leg 2."
+    },
+    {
+      "surface": "air-gap",
+      "platform": "linux/amd64",
+      "level": "not-tested",
+      "proof": []
+    },
+    {
+      "surface": "air-gap",
+      "platform": "darwin/amd64",
+      "level": "not-applicable",
+      "proof": []
+    },
+    {
+      "surface": "air-gap",
+      "platform": "darwin/arm64",
+      "level": "not-applicable",
+      "proof": []
+    },
+    {
+      "surface": "device-agent",
+      "platform": "linux/arm64",
+      "level": "build-only",
+      "proof": [
+        "LP-007",
+        "TestReleaseIndexShape",
+        "TestAReleaseServesEveryDeviceTheInstallerCanResolve"
+      ],
+      "note": "Built, digest-verified and INSTALLED by the real installer; mTLS enrolment is proven over the compose network (LP-007) but on the SAME host. A separate physical host is E14 §6 leg 3."
+    },
+    {
+      "surface": "device-agent",
+      "platform": "linux/amd64",
+      "level": "build-only",
+      "proof": [
+        "TestReleaseIndexShape",
+        "TestAReleaseServesEveryDeviceTheInstallerCanResolve"
+      ],
+      "note": "Built and installed by the real installer under a faked uname; never executed on an amd64 host."
+    },
+    {
+      "surface": "device-agent",
+      "platform": "darwin/amd64",
+      "level": "build-only",
+      "proof": [
+        "TestReleaseIndexShape",
+        "TestAReleaseServesEveryDeviceTheInstallerCanResolve"
+      ],
+      "note": "Built and installed by the real installer under a faked uname on an arm64 host; never executed on an Intel Mac."
+    },
+    {
+      "surface": "device-agent",
+      "platform": "darwin/arm64",
+      "level": "build-only",
+      "proof": [
+        "TestReleaseIndexShape",
+        "TestAReleaseServesEveryDeviceTheInstallerCanResolve"
+      ],
+      "note": "‼️ NO LONGER not-applicable, and the reason it was is stale: that cell rested on \"Palai's services ship only as linux images\", which is true of the SERVICES and was never true of the device agent. Built, digest-verified and installed by the real installer here. Enrolling it and serving a session on the enrolled Mac was run by hand on 2026-08-06 (device plan milestone A0) and has no proof id yet."
+    },
+    {
+      "surface": "cli",
+      "platform": "darwin/arm64",
+      "level": "tested",
+      "proof": [
+        "API-012",
+        "LP-012",
+        "OPS-002"
+      ],
+      "note": "Every CLI command in the runbooks was executed here."
+    },
+    {
+      "surface": "cli",
+      "platform": "darwin/amd64",
+      "level": "build-only",
+      "proof": [
+        "TestReleaseIndexShape",
+        "TestReleaseBinariesAreTrimpathedAndPathFree"
+      ]
+    },
+    {
+      "surface": "cli",
+      "platform": "linux/arm64",
+      "level": "build-only",
+      "proof": [
+        "TestReleaseIndexShape",
+        "TestReleaseBinariesAreTrimpathedAndPathFree"
+      ]
+    },
+    {
+      "surface": "cli",
+      "platform": "linux/amd64",
+      "level": "build-only",
+      "proof": [
+        "TestReleaseIndexShape",
+        "TestReleaseBinariesAreTrimpathedAndPathFree"
+      ]
+    }
   ],
   "elsewhere": {
     "sdks": "docs/operations/sdk-compatibility.md (+ .json) — SDK × capability, its own honest-matrix guard.",

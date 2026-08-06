@@ -71,7 +71,7 @@ architecture you actually deploy — `build.sh` defaults to **both** `linux/amd6
 
 ```sh
 scripts/release/build.sh --tag 0.15.0 --out ./out \
-  --platforms linux/arm64 --cli-targets linux/arm64 --runner-archs arm64
+  --platforms linux/arm64 --cli-targets linux/arm64 --agent-targets linux/arm64
 ```
 
 That produces `palai/{control-plane,runner,reference-engine}:0.15.0`, the `palai` CLI, and

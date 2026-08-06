@@ -40,7 +40,7 @@
 #
 # Usage:
 #   scripts/release/build.sh --tag <suffix> --out <dir> [--version <v>] [--no-images]
-#                            [--platforms <list>] [--cli-targets <list>] [--runner-archs <list>]
+#                            [--platforms <list>] [--cli-targets <list>] [--agent-targets <list>]
 #     --tag           image tag suffix; produces palai/{control-plane,runner,reference-engine}:<suffix>
 #                     for the host platform and :<suffix>-<arch> for the others
 #     --out           directory the manifest, index, binaries, packages and image tars are written to
@@ -48,7 +48,7 @@
 #     --no-images     build only binaries + host packages (fast, Docker-free)
 #     --platforms     image platforms (default linux/amd64,linux/arm64)
 #     --cli-targets   CLI <os>/<arch> pairs (default darwin/amd64,darwin/arm64,linux/amd64,linux/arm64)
-#     --runner-archs  runner host package arches (default amd64,arm64)
+#     --agent-targets device agent <os>/<arch> pairs (default darwin/amd64,darwin/arm64,linux/amd64,linux/arm64)
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -60,7 +60,7 @@ version_override="${PALAI_VERSION:-}"
 build_images=1
 platforms="linux/amd64,linux/arm64"
 cli_targets="darwin/amd64,darwin/arm64,linux/amd64,linux/arm64"
-runner_archs="amd64,arm64"
+agent_targets="darwin/amd64,darwin/arm64,linux/amd64,linux/arm64"
 
 # invocation_args records THIS invocation for the release index, which is what E18 T3's provenance
 # attestation names as the build command's parameters. --out is deliberately NOT recorded: it is a
@@ -81,7 +81,7 @@ while [ $# -gt 0 ]; do
     --no-images) build_images=0; record_arg "$1"; shift;;
     --platforms) platforms="$2"; record_arg "$1"; record_arg "$2"; shift 2;;
     --cli-targets) cli_targets="$2"; record_arg "$1"; record_arg "$2"; shift 2;;
-    --runner-archs) runner_archs="$2"; record_arg "$1"; record_arg "$2"; shift 2;;
+    --agent-targets) agent_targets="$2"; record_arg "$1"; record_arg "$2"; shift 2;;
     *) echo "build.sh: unknown argument $1" >&2; exit 2;;
   esac
 done
@@ -107,6 +107,26 @@ fi
 describe="$(git describe --tags --always --dirty 2>/dev/null || echo unknown)"
 commit="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
 stamp="${version}+g${describe}"
+
+# ‼️ A DIRTY TREE CANNOT NAME A RELEASE, because the name it produces is not unique. Every artifact
+# below carries this stamp — it is what a device reports to the fleet and what the §48.2 window
+# compares — and "<version>+g<commit>-dirty" is the SAME string for any two working trees sitting on
+# that commit. Two different binaries would then claim one identity, and the panel could not tell an
+# operator which one a machine is running. The commit is recorded beside it, and it does not
+# disambiguate: it names what the tree was based on, not what was built.
+# Set PALAI_RELEASE_ALLOW_DIRTY=1 for a scratch build (the reduced-matrix tests and the local smokes
+# do, deliberately) — never for a release.
+case "$describe" in
+  *-dirty)
+    if [ "${PALAI_RELEASE_ALLOW_DIRTY:-}" != "1" ]; then
+      echo "build.sh: REFUSED: the working tree is dirty, so the stamp '$stamp' does not identify" >&2
+      echo "  the bytes being built — commit or clean first (PALAI_RELEASE_ALLOW_DIRTY=1 for a scratch build):" >&2
+      git status --short >&2
+      exit 2
+    fi
+    echo "build.sh: WARNING: building from a DIRTY tree at $stamp — a scratch build, not a release" >&2
+    ;;
+esac
 
 # SOURCE_DATE_EPOCH defaults to the COMMIT time, never `now`: the build's timestamps are then a
 # function of the source, which is what makes two runs of this script comparable. An operator can
@@ -177,15 +197,24 @@ else
   CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags "$release_ldflags" -o "$out/palai" ./cmd/cli
 fi
 
-# --- runner host package per arch -------------------------------------------------------------
-# The E14 T5 packager already takes ARCH/OUT and already builds deterministically (fixed mtime,
-# uid/gid 0, gzip -n). Per-arch OUT dirs keep the two packages' sibling files apart. It also emits a
-# .sig/.pub with an EPHEMERAL key when no operator key is set — the ECDSA signature is not
-# reproducible (random k) and is NOT indexed here: binding signatures to the index is T3's job.
-for arch in $(echo "$runner_archs" | tr ',' ' '); do
-  echo "build.sh: runner host package linux/${arch}" >&2
-  pkg="$(VERSION="$version" ARCH="$arch" OUT="$out/runner-package/$arch" scripts/package/runner/build.sh)"
-  add_artifact runner-host-package "runner-package/$arch/$pkg" linux "$arch"
+# --- device agent archives ----------------------------------------------------------------------
+# The archives `install.sh` fetches: palai-<version>-<os>-<arch>.tar.gz, one per target, each carrying
+# the `palai` binary a machine is enrolled and run by. DARWIN IS A TARGET AND NOT AN AFTERTHOUGHT — this
+# loop used to take arches alone and hardcode linux, so a builder could not serve a Mac fleet at all,
+# which is most of the fleet this agent exists for.
+#
+# ‼️ ONE DIRECTORY FOR THE WHOLE VERSION, because `checksums.txt` covers a VERSION and not a target: the
+# installer fetches that single manifest as its own request and looks up its own os/arch line in it.
+# Per-target directories would split it into four manifests no installer asks for. The packager appends
+# to it, and every other sibling it writes (.sha256/.sig/.pub) is named for its own archive, so the four
+# invocations coexist. It signs with an EPHEMERAL key when no operator key is set; signatures are not
+# indexed here — binding them to the index is T3's job.
+for target in $(echo "$agent_targets" | tr ',' ' '); do
+  goos="${target%%/*}"; goarch="${target##*/}"
+  echo "build.sh: device agent ${goos}/${goarch} at $stamp" >&2
+  pkg="$(VERSION="$version" STAMP="$stamp" OS="$goos" ARCH="$goarch" OUT="$out/device" \
+    scripts/package/runner/build.sh)"
+  add_artifact device-agent "device/$pkg" "$goos" "$goarch"
 done
 
 # --- images -----------------------------------------------------------------------------------

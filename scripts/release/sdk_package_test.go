@@ -53,6 +53,7 @@ func TestMain(m *testing.M) {
 		filepath.Join(root, "scripts/release/build.sh"),
 		"--out", rel, "--no-images", "--version", "18.0.0"}, reducedMatrix...)...)
 	build.Dir = root
+	build.Env = append(os.Environ(), scratchBuild...)
 	if combined, err := build.CombinedOutput(); err != nil {
 		os.RemoveAll(out)
 		os.RemoveAll(rel)

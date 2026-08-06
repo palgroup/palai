@@ -32,7 +32,7 @@ For the **CLI** the platform is the workstation.
 | Production single-node compose behind the TLS edge | — | tested | n/a | n/a |
 | Kubernetes via the restricted Helm chart (runner outside the cluster) | — | tested | n/a | n/a |
 | Offline signed air-gap bundle install | — | tested | n/a | n/a |
-| Runner host package on a separate host | build | build | n/a | n/a |
+| Device agent (`install.sh` + `palai enroll`) | build | build | build | build |
 | `palai` CLI on an operator workstation | build | build | build | tested |
 
 ## What each filled cell rests on
@@ -45,8 +45,10 @@ For the **CLI** the platform is the workstation.
 | production compose `linux/arm64` | `OPS-002`, `DR-002`, `DR-004` | A dedicated cloud VM with a real domain and certificate is E14 §6 leg 1 |
 | Kubernetes `linux/arm64` | `OPS-003`, `TestNoClusterRole`, `TestNetworkPolicyDefaultDeny`, `make uat-kind` | On a **kind** cluster. kindnet does **not** enforce NetworkPolicy, so default-deny is proven as a **render**, not as enforcement — a real enforcing CNI is E15 §6 leg 1 |
 | air-gap `linux/arm64` | `OPS-004` | Offline verify + tamper rejection on an internal Docker network. A physical air-gapped facility with an operator trust-root ceremony is E15 §6 leg 2 |
-| runner host package `linux/arm64` | `LP-007`, `TestReleaseIndexShape` | mTLS enrollment is proven — on the **same** host, over the compose network. A separate physical host with systemd is E14 §6 leg 3 |
-| runner host package `linux/amd64` | `TestReleaseIndexShape` | Built and indexed only |
+| device agent `linux/arm64` | `LP-007`, `TestReleaseIndexShape`, `TestAReleaseServesEveryDeviceTheInstallerCanResolve` | mTLS enrolment is proven — on the **same** host, over the compose network. A separate physical host with systemd is E14 §6 leg 3 |
+| device agent `linux/amd64` | `TestReleaseIndexShape`, `TestAReleaseServesEveryDeviceTheInstallerCanResolve` | Built and installed by the real installer under a faked `uname`; **never executed** on an amd64 host |
+| device agent `darwin/arm64` | `TestReleaseIndexShape`, `TestAReleaseServesEveryDeviceTheInstallerCanResolve` | **This cell used to read `n/a`**, resting on *"Palai's services ship only as linux images"* — true of the services, never true of the agent. Enrolling the installed Mac and serving a session on it was a **hand run** (2026-08-06, device plan A0) and has no proof id |
+| device agent `darwin/amd64` | `TestReleaseIndexShape`, `TestAReleaseServesEveryDeviceTheInstallerCanResolve` | Built and installed under a faked `uname` on an arm64 host; **never executed** on an Intel Mac |
 | CLI `darwin/arm64` | `API-012`, `LP-012`, `OPS-002` | Every CLI command in the runbooks was executed here |
 | CLI other platforms | `TestReleaseIndexShape`, `TestReleaseBinariesAreTrimpathedAndPathFree` | Cross-compiled, digest-indexed and trimpath-checked; **not run** |
 

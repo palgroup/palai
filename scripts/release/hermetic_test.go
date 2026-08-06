@@ -194,7 +194,7 @@ func TestHostCompileLegsRefuseTheProxy(t *testing.T) {
 		"cli matrix (scripts/release/build.sh)": {
 			argv: []string{filepath.Join(root, "scripts/release/build.sh"),
 				"--out", t.TempDir(), "--no-images", "--version", "18.0.0",
-				"--cli-targets", "darwin/arm64", "--runner-archs", "arm64"},
+				"--cli-targets", "darwin/arm64", "--agent-targets", "darwin/arm64"},
 		},
 		"runner host package (scripts/package/runner/build.sh)": {
 			argv: []string{filepath.Join(root, "scripts/package/runner/build.sh")},
@@ -216,7 +216,7 @@ func TestHostCompileLegsRefuseTheProxy(t *testing.T) {
 				"GOMODCACHE="+cold,
 				"GOPROXY=https://proxy.golang.org,direct",
 				"GOFLAGS=",
-			), leg.env...)
+			), append(append([]string{}, scratchBuild...), leg.env...)...)
 			o, err := cmd.CombinedOutput()
 			if err == nil {
 				t.Fatalf("SUCCEEDED with a COLD module cache — this leg resolved through the module proxy,"+

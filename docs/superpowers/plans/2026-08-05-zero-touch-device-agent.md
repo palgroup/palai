@@ -629,17 +629,41 @@ today and one installed next month converge on whatever the plane's desired vers
 settings poll. Pinning stays available for image bakes (`PALAI_VERSION`, T7b) and is not the mechanism
 that keeps a fleet consistent.
 
-### T7 — Cut the real device distributions
+### T7 — Cut the real device distributions ⚠️ PARTLY DONE (2026-08-06)
 
 **Goal:** Install from release artifacts, not from the repository.
 
 **RED first**
 
-- Release index must contain `palai` for Darwin/Linux × amd64/arm64 and must identify `palai-selfhost`
-  separately.
-- Extracting the device package must reveal no server/admin command implementation.
-- The install script resolves an immutable URL and verifies a SHA-256 it fetched separately (T7b).
-- A package built from a dirty tree or carrying an unstamped version is refused by the release gate.
+- ✅ Release index must contain `palai` for Darwin/Linux × amd64/arm64 — `scripts/release/build.sh` took
+  `--runner-archs` (arch only, **linux hardcoded**), so no release could serve a Mac fleet. It now takes
+  `--agent-targets <os>/<arch>` defaulting to all four, writes them into ONE `device/` directory so they
+  share the `checksums.txt` install.sh fetches, and indexes them as kind `device-agent`.
+  `TestAReleaseServesEveryDeviceTheInstallerCanResolve` builds with the DEFAULT targets and drives the
+  REAL `install.sh` once per uname pair it accepts, over HTTP, asserting the binary that lands is the one
+  from THAT triple's archive. **Neither side's platform list is written in the test.** Perturbed by
+  restoring the linux-only default: both darwin legs RED, both linux legs PASS.
+- ❌ …and must identify `palai-selfhost` separately — **NOT DONE, and the collision is live**: the release
+  writes the admin CLI to `$out/palai` while `install.sh` installs the device agent as `palai`. Two
+  different binaries, one name. One runtime consumer (`scripts/test/upgrade-drill.sh:30`).
+- ✅ Extracting the device package must reveal no server/admin command implementation —
+  `cmd/runner/surface_test.go` asserts the LINKED package set (a grep of cmd/runner/*.go cannot see an
+  admin verb reached through a helper). Perturbed with a non-test import of the control-plane API: RED.
+  The rule names `apps/` only; `cmd/cli` is a `package main` and its `internal/` is closed by the
+  compiler, so a second denied root would have been a branch that can never fire.
+- ✅ The install script resolves an immutable URL and verifies a SHA-256 it fetched separately (T7b).
+- ✅ A package built from a dirty tree or carrying an unstamped version is refused by the release gate —
+  **both halves were open, and the second one silently disarmed a shipped guard.** The packager compiled
+  `cmd/runner` with no `-X version.Stamp` and `-buildvcs=false`, so every installed agent reported `dev`;
+  `version.Supported` is FAIL-OPEN for an unstamped build, so the §48.2 window that `cmd/runner`'s own
+  comment says the version is advertised for could not fire on ANY packaged machine, the panel read one
+  version for the whole fleet, and a desired-version rollout had nothing to compare. The packager now
+  stamps and REFUSES a non-release stamp (`stamp_test.go` binds its shell rule to `version.IsReleaseStamp`
+  over one table, so the two cannot drift); `scripts/release/build.sh` refuses a dirty tree, because
+  `<version>+g<commit>-dirty` is the same string for any two trees on that commit — two binaries, one
+  identity. Measured live in both directions on 2026-08-06.
+  **Ceiling:** no test manufactures dirt in this shared checkout on purpose, so the dirty refusal is
+  exercised by construction (a developer's tree is dirty, CI's is clean) rather than by a gate.
 
 **THERE IS NO HOMEBREW TAP, AND DROPPING IT IS A CORRECTION RATHER THAN A SCOPE CUT.** An earlier draft
 of this plan had Homebrew as the human path and `install.sh` as the fleet path. That is **two installers

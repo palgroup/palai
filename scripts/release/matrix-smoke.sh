@@ -39,10 +39,12 @@ trap cleanup EXIT
 step() { echo "matrix-smoke: $*" >&2; }
 
 step "building the full image matrix (linux/amd64 + linux/arm64) into $out"
-"$root/scripts/release/build.sh" --tag "$tag" --out "$out" \
+# A local smoke builds from the developer's tree, which is normally dirty; build.sh refuses that for a
+# RELEASE (a "-dirty" stamp names no unique bytes) and this declares itself a scratch build.
+PALAI_RELEASE_ALLOW_DIRTY=1 "$root/scripts/release/build.sh" --tag "$tag" --out "$out" \
   --platforms linux/amd64,linux/arm64 \
   --cli-targets "$(go env GOOS)/$(go env GOARCH)" \
-  --runner-archs "$(go env GOARCH)"
+  --agent-targets "$(go env GOOS)/$(go env GOARCH)"
 
 # The index's image half, checked against the artifacts' own bytes.
 python3 - "$out" <<'PY'
