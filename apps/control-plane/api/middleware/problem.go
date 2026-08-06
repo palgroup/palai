@@ -34,8 +34,13 @@ func WriteProblem(w http.ResponseWriter, r *http.Request, status int, code, deta
 // absent here still render (empty title is acceptable), but the LP-0 surface only
 // emits these.
 var problemTitles = map[string]string{
-	"authentication_required":    "Authentication required",
-	"invalid_token":              "Invalid token",
+	"authentication_required": "Authentication required",
+	"invalid_token":           "Invalid token",
+	// The plane could not verify a key — its store is unreachable. It is titled rather than left to the
+	// empty-title fallback because this is the one problem whose whole job is to be READ: it exists so a
+	// caller stops suspecting their credential, and a document titled "" beside a detail that says "not
+	// the key's" is a mixed message on the surface a person scans first.
+	"verification_unavailable":   "Key verification unavailable",
 	"missing_idempotency_key":    "Missing idempotency key",
 	"invalid_request":            "Invalid request",
 	"invalid_cursor":             "Invalid pagination cursor",

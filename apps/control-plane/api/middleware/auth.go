@@ -119,8 +119,29 @@ func Auth(v Verifier) func(http.Handler) http.Handler {
 				return
 			}
 			scope, err := v.VerifyAPIKey(r.Context(), token)
-			if err != nil {
+			switch {
+			case errors.Is(err, ErrInvalidToken):
 				WriteProblem(w, r, http.StatusUnauthorized, "invalid_token", "the API key is not valid")
+				return
+			case err != nil:
+				// ‼️ A VERIFIER THAT COULD NOT LOOK IS NOT A KEY THAT IS WRONG, AND EVERY ERROR ANSWERED
+				// 401 UNTIL 2026-08-07. The store already draws the line — ErrInvalidToken for a hash that
+				// matches no live credential, a wrapped error for anything else — and this branch threw it
+				// away, so a control plane whose database had gone told every caller their credential was
+				// invalid.
+				//
+				// Measured that night: the plane's Postgres container was stopped by a disk cleanup, and a
+				// key that had worked all evening started answering `401 the API key is not valid`. The
+				// hour that followed was spent on the key — its bytes, its trailing newline, the tunnel in
+				// front of it, its row in a database that was not running — because the answer named the
+				// credential. The plane's own /healthz said `ok` throughout.
+				//
+				// 503 is the honest code: the fault is the plane's, it is retryable, and it must not send
+				// a paying customer to rotate a credential that is fine. The detail names the verification
+				// and not the store, because "which dependency" is an operator's question and a caller
+				// holding a valid key only needs to know it was not them.
+				WriteProblem(w, r, http.StatusServiceUnavailable, "verification_unavailable",
+					"the API key could not be verified — this is the control plane's fault, not the key's; retry shortly")
 				return
 			}
 			// The verified scope is also published to the database layer, so every query this
