@@ -770,8 +770,13 @@ var deploymentCatalogue = []catalogueEntry{
 // The two reasons are the only two there are: the value is a credential, or the value is not this
 // process's to report.
 var unreportedSettings = map[string]string{
-	"PALAI_CONTROLLER_URL":  "runner-scoped: the address the RUNNER dials this control plane on. This process holds no copy.",
-	"PALAI_CONTROLLER_DNS":  "runner-scoped: the SAN the RUNNER pins its gateway connection to. This process holds no copy.",
+	"PALAI_CONTROLLER_URL": "runner-scoped: the address the RUNNER dials this control plane on. This process holds no copy.",
+	"PALAI_CONTROLLER_DNS": "runner-scoped: the SAN the RUNNER pins its gateway connection to. This process holds no copy.",
+	// The AGENT's trust anchor, and it is not the same thing as PALAI_RUNNER_CA_CERT one group up — that
+	// one is the CA this process SIGNS machine certificates with and is catalogued because this process
+	// reads it. This is the file an agent verifies the gateway against, on the agent's own disk, and the
+	// plane holds no copy of it. Naming them alike in compose.yaml is what this rename removed.
+	"PALAI_CONTROLLER_CA":   "runner-scoped: the trust anchor the AGENT verifies this gateway with, on the agent's disk. This process holds no copy.",
 	"PALAI_COMPOSE_PROJECT": "runner-scoped: the compose project label the RUNNER tags engine sandboxes with. This process holds no copy.",
 	// IT IS NOT A CATALOGUE ENTRY, AND THE DIFFERENCE FROM ITS SIBLING IS THE WHOLE REASON. The runner-plane
 	// row above (PALAI_RUNNER_CONCURRENCY) earned its place when the plane gained a way to SEND the value:
