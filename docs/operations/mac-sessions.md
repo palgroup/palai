@@ -100,9 +100,17 @@ different claims, and this is the one that measures the second:
 make test-live-ios-demo ARGS=--with-accounts
 ```
 
-It runs a real session and asserts the command inside it ran as `palai-sNN` rather than as the control
-plane's own uid. Without the `--with-accounts` leg the same smoke passes on a deployment with no boundary
-at all.
+‼️ **AND READ WHAT THAT LEG ACTUALLY ASSERTS, BECAUSE IT IS NARROWER THAN ITS HEADING.** It counts
+`palai-s*` accounts before the run, after it and after the close: the count must RISE when a session starts
+and FALL when it ends. That proves the control plane reached the wrapper and released what it took — which
+is the half that is unreachable without step two, and the half that fails loudly when the sudoers entry is
+missing (`is PALAI_SESSION_ACCOUNT_HELPER set on the control plane?`).
+
+**What it does NOT yet assert is that the session's commands RAN as that account.** "An account was created"
+and "the command ran as it" are two claims, and only the second one is the boundary. Until a leg drives
+`id -un` through the session's own shell tool and requires `palai-s`, this page claims the first. Without
+`--with-accounts` at all, the same smoke passes on a deployment with no boundary whatsoever, which is why
+the flag exists.
 
 ## 4. Verify — because a boundary you did not test is a boundary you do not have
 
