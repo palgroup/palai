@@ -271,6 +271,17 @@ func validateDesiredValue(entry catalogueEntry, value string) error {
 		if d < 0 {
 			return fmt.Errorf("%s is negative", d)
 		}
+	case desiredPositiveDuration:
+		d, err := time.ParseDuration(value)
+		if err != nil {
+			return fmt.Errorf("not a Go duration (time.ParseDuration: %v). `10min` is ten minutes to a reader and "+
+				"UNPARSEABLE to this binary, which then uses its default and says nothing — write `10m`", err)
+		}
+		if d <= 0 {
+			return fmt.Errorf("%s is not positive, and this bound has no `off`: its reader refuses a "+
+				"non-positive value and falls back to its default, so a stored zero would be a panel "+
+				"showing a number the process is not running", d)
+		}
 	case desiredToken:
 		if !desiredTokenPattern.MatchString(value) {
 			return fmt.Errorf("does not match %s — a provider selector or a model id, and nothing that could act "+

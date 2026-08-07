@@ -180,7 +180,13 @@ const (
 	desiredInt      = "integer"  // strconv.Atoi, and non-negative
 	desiredRate     = "rate"     // strconv.ParseFloat, finite and non-negative
 	desiredDuration = "duration" // time.ParseDuration, non-negative
-	desiredToken    = "token"    // a bare identifier: see desiredTokenPattern
+	// desiredPositiveDuration is desiredDuration for a bound where ZERO IS NOT A MEANING. Most durations
+	// here spell "off" or "unbounded" as 0 and their readers honour it; an engine wall time cannot —
+	// runner.Limits refuses a non-positive bound, so a stored `0` would be a panel showing a number the
+	// process is not running, and a deployment that went from "runs are slow" to "nothing runs at all".
+	// Refusing it at the door is the same rule the paragraph above states for `10min`.
+	desiredPositiveDuration = "positive duration"
+	desiredToken            = "token" // a bare identifier: see desiredTokenPattern
 )
 
 const (
@@ -906,6 +912,21 @@ var deploymentCatalogue = []catalogueEntry{
 		Effect:     "Set to the exact words `unsandboxed-host`, shell commands run on the machine as its uid with NO container boundary, no network denial and no resource bound. The value is a sentence rather than a `1` because deleting a security boundary should not be reachable by the reflex that switches a feature on. SET IT ON THE RUNNER: since A.3 that machine is the one holding the attempt's lease, and this process's copy governs only detached background tasks.",
 		Mutability: mutabilityBringUp, ChangeWith: changeCP,
 		ReaderFile: shellPosture, ReaderFunc: "Resolve",
+	},
+	{
+		Name: "PALAI_ENGINE_WALL_TIME", Group: "execution", Kind: kindValue, Default: "5m",
+		Effect: "How long ONE attempt's engine may run before the supervisor kills it. It was fixed at 60s " +
+			"for every run, which is below the honest duration of the work it bounds: measured 2026-08-07, " +
+			"runs that clone a repository, call a model several times, write a file and commit it took " +
+			"94.7s, 80.0s, 30.5s, 19.0s and 13.9s, against 9-15s for a plain answer. Runs over the bound " +
+			"completed only because the retry ladder gave them a second attempt after the first was killed " +
+			"mid-work. Raise it for a slower model or a larger repository; an unparseable value is the " +
+			"default rather than a zero, because a non-positive bound is refused and would stop every run.",
+		Mutability:   mutabilityBringUp,
+		ChangeWith:   changeCP,
+		ReaderFile:   "apps/control-plane/internal/execution/execute_run.go",
+		ReaderFunc:   "EngineWallTime",
+		DesiredValue: desiredPositiveDuration,
 	},
 	{
 		Name: "PALAI_SANDBOX_WALL_TIME", Group: "shell", Kind: kindValue, Default: "10m",

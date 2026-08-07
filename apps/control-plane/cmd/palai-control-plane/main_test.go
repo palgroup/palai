@@ -628,6 +628,18 @@ func TestEveryDesiredValueThisBinaryAcceptsIsParsedByItsOwnReader(t *testing.T) 
 			accepted: map[string]string{"gpt-4o-mini": "gpt-4o-mini", "anthropic/claude-x": "anthropic/claude-x"},
 			refused:  map[string]string{"gpt-4o mini": "gpt-4o mini", "${PALAI_SECRET_PROVIDER_ONE}": "${PALAI_SECRET_PROVIDER_ONE}"},
 		},
+		{
+			setting: "PALAI_ENGINE_WALL_TIME",
+			read:    func() string { return execution.EngineWallTime().String() },
+			// The two forms an operator actually types for a duration, both parsed.
+			accepted: map[string]string{"12m": "12m0s", "90s": "1m30s"},
+			// ‼️ EVERY REFUSED SHAPE FALLS BACK TO THE DEFAULT, NEVER TO ZERO, and that direction is the
+			// whole point: runner.Limits refuses a non-positive wall time, so a value coerced to 0 would
+			// take a deployment from "runs are slow" to "nothing runs at all". `5min` is a duration to a
+			// human and nothing to Go — the same trap the shell posture writes down — and a negative one
+			// parses cleanly, which is why it is rejected on its VALUE and not on its syntax.
+			refused: map[string]string{"5min": "5m0s", "-5m": "5m0s", "0": "5m0s"},
+		},
 	}
 
 	// Every writable setting must appear, or the table has quietly stopped covering one.

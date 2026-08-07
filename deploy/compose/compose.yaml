@@ -200,6 +200,10 @@ services:
       PALAI_S3_REGION: ${PALAI_S3_REGION:-}
       PALAI_METRICS_DISK_PATH: ${PALAI_METRICS_DISK_PATH:-}
       PALAI_WORKSPACE_IDLE_TTL: ${PALAI_WORKSPACE_IDLE_TTL:-}
+      # How long one attempt's ENGINE may run. It sits on the control plane and not on the runner
+      # because the limits ride the lease: the plane decides the bound and the machine enforces the one
+      # it was given, so the two cannot disagree about how long a run had.
+      PALAI_ENGINE_WALL_TIME: ${PALAI_ENGINE_WALL_TIME:-}
       PALAI_ABANDONED_LEASE_GRACE: ${PALAI_ABANDONED_LEASE_GRACE:-}
       PALAI_DRAIN_TIMEOUT: ${PALAI_DRAIN_TIMEOUT:-}
       PALAI_QUEUE_TICK: ${PALAI_QUEUE_TICK:-}

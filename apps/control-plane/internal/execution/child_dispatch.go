@@ -37,7 +37,7 @@ type RemoteChildRunner interface {
 }
 
 // Delegation bounds (spec §25.18). ponytail: fixed here until per-project delegation config
-// arrives with the E-series carve-out — the same fixed-limits pattern as defaultAttemptLimits.
+// arrives with the E-series carve-out — the same limits attemptLimits() leases.
 const (
 	// maxChildDepth is 1: recursive delegation is off by default, so a child (depth 1) may not
 	// delegate further (a depth>1 request is denied, §25.18).
@@ -403,7 +403,7 @@ func (o *Orchestrator) dispatchChild(ctx context.Context, st *attemptState, fram
 	// depth-1 child, and the worktree shares the parent's object store without a second single-writer slot.
 	childDesc := AttemptDescriptor{
 		RunID: contracts.RunID(childRunID), AttemptID: newAttemptID(), Fence: st.attempt.Fence,
-		ImageDigest: st.attempt.ImageDigest, Limits: defaultAttemptLimits,
+		ImageDigest: st.attempt.ImageDigest, Limits: attemptLimits(),
 	}
 	if childWS.Mode != workspaceModeNone && st.attempt.WorkspaceHostPath != "" {
 		hostPath, err := o.realizeChildWorkspace(ctx, st, childRunID, childWS)
@@ -583,7 +583,7 @@ func (o *Orchestrator) rebindChild(ctx context.Context, st *attemptState, spec c
 	// WORKSPACE-mode inline child is a named gap (rare — depth-1, worktree persists under the parent).
 	childDesc := AttemptDescriptor{
 		RunID: contracts.RunID(existing.RunID), AttemptID: newAttemptID(), Fence: st.attempt.Fence,
-		ImageDigest: st.attempt.ImageDigest, Limits: defaultAttemptLimits,
+		ImageDigest: st.attempt.ImageDigest, Limits: attemptLimits(),
 	}
 	_ = o.ExecuteAttempt(ctx, childDesc)
 	return o.foldChildResult(ctx, st, spec.ChildRequestID, existing.RunID, frame)
