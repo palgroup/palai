@@ -27,9 +27,9 @@ func TestTheLaunchAgentGoesIntoTheHUMANSGuiDomain(t *testing.T) {
 		{"zero is not a GUI domain either", "0", 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := guiDomainUID(func(string) string { return tc.sudoUID }, root)
+			got := GUIDomainUID(func(string) string { return tc.sudoUID }, root)
 			if got != tc.want {
-				t.Fatalf("guiDomainUID(SUDO_UID=%q) = %d, want %d", tc.sudoUID, got, tc.want)
+				t.Fatalf("GUIDomainUID(SUDO_UID=%q) = %d, want %d", tc.sudoUID, got, tc.want)
 			}
 		})
 	}

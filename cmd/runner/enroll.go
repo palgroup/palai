@@ -278,6 +278,18 @@ func enrol(ctx context.Context, args []string, out io.Writer, seams enrolSeams) 
 	fmt.Fprintf(out, "service   %s (loaded=%t started=%t)\n", installed.Path, installed.Loaded, installed.Started)
 	fmt.Fprintf(out, "logs      %s\n", paths.LogFile)
 
+	// STEP 9 — HAND WHAT ROOT WROTE TO THE ACCOUNT THAT WILL READ IT. The agent runs as the human in
+	// their GUI session and every file above was written by the root this command had to be. Without
+	// this the agent loads, cannot stat its own config, and crash-loops with "permission denied" while
+	// launchctl cheerfully reports started=true.
+	if uid := device.GUIDomainUID(os.Getenv, os.Getuid); uid != os.Geteuid() {
+		if err := device.HandOverTo(paths, uid, -1); err != nil {
+			return fmt.Errorf("the machine is enrolled as %s and its agent is loaded, but the files it "+
+				"reads are still owned by root: %w", identity.RunnerID, err)
+		}
+		fmt.Fprintf(out, "owner     uid %d\n", uid)
+	}
+
 	return nil
 }
 

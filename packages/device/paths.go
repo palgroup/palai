@@ -14,6 +14,8 @@
 package device
 
 import (
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -114,4 +116,42 @@ func HostPaths() (Paths, error) {
 		return Paths{}, err
 	}
 	return DefaultPaths(runtime.GOOS, home, os.Getenv), nil
+}
+
+// HandOverTo gives every file this enrolment wrote to the account that will READ them.
+//
+// ENROLMENT RUNS AS root — it must, to install the account daemon — and the agent runs as the human in
+// their GUI session. Root-owned files in that human's Application Support directory are not a
+// permissions nicety: the agent loads, cannot stat its own config, and crash-loops with
+// "read device configuration: permission denied" while `launchctl` reports it started. Measured on a
+// real Mac on 2026-08-07.
+//
+// It walks rather than naming the four files, because the next file added under this directory would
+// otherwise be the next one root keeps. A failure on any single entry is reported with its path: a
+// partial hand-over leaves the agent unable to start, which is the state this exists to prevent, and
+// silently ignoring it would produce exactly the crash-loop above one file later.
+func HandOverTo(paths Paths, uid, gid int) error {
+	roots := map[string]struct{}{}
+	for _, f := range []string{paths.ConfigFile, paths.IdentityFile, paths.DeviceKeyFile, paths.LogFile, paths.WorkspaceRoot} {
+		if f != "" {
+			roots[filepath.Dir(f)] = struct{}{}
+		}
+	}
+	for dir := range roots {
+		if err := filepath.WalkDir(dir, func(path string, _ fs.DirEntry, err error) error {
+			if err != nil {
+				if os.IsNotExist(err) {
+					return nil
+				}
+				return err
+			}
+			if err := os.Chown(path, uid, gid); err != nil {
+				return fmt.Errorf("hand %s to uid %d: %w", path, uid, err)
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }

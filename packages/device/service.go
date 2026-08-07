@@ -194,7 +194,7 @@ func install(goos string, paths Paths, spec ServiceSpec, run runner) (InstalledS
 		// the same exit status from launchctl. Not evicting is worse: bootstrap onto an already-bootstrapped
 		// label fails with "service already loaded" and a re-run of `enroll` would refuse on a machine
 		// that is simply already installed.
-		uid := guiDomainUID(os.Getenv, os.Getuid)
+		uid := GUIDomainUID(os.Getenv, os.Getuid)
 		domain := fmt.Sprintf("gui/%d", uid)
 		// THE PLIST BELONGS TO THE HUMAN, not to the root that wrote it. launchd reads it as that user,
 		// and a root-owned file in their LaunchAgents directory is the kind of thing that works today and
@@ -254,7 +254,7 @@ func install(goos string, paths Paths, spec ServiceSpec, run runner) (InstalledS
 // SUDO_UID is the only thing that carries that identity into a root process. It is read defensively —
 // a non-numeric or zero value falls back to the real uid rather than guessing — because this decides
 // which domain a service is loaded into and a wrong answer is silent until somebody looks for the agent.
-func guiDomainUID(getenv func(string) string, getuid func() int) int {
+func GUIDomainUID(getenv func(string) string, getuid func() int) int {
 	if uid, err := strconv.Atoi(strings.TrimSpace(getenv("SUDO_UID"))); err == nil && uid > 0 {
 		return uid
 	}
