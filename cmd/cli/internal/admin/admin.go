@@ -1,4 +1,4 @@
-// Package admin is the `palai apikey|secret|pool|runner|model` admin CLI: a thin authenticated
+// Package admin is the `palai apikey|secret|pool|model` admin CLI: a thin authenticated
 // HTTP client over the E13 provisioning + secret-ref APIs (router.go:152-187), the E24 runner-pool key
 // surface and the E24 T5 machine lifecycle. It adds NO server surface — every subcommand maps to one
 // existing endpoint. Until the E17 console it is the only human interface for tenancy admin (spec §47.6),
@@ -127,9 +127,6 @@ func (f *flags) register(fs *flag.FlagSet, resource string) {
 		fs.BoolVar(&f.strict, "strict", false, "enrolling into this pool needs a human approval (create, set-strict) — omit on set-strict to close the waiting room")
 		fs.StringVar(&f.isolation, "isolation", "", "the session-isolation mechanism a machine must MEASURE to enrol here: user, accounts or container — omit to require none, which is every pool shipped so far (create)")
 		fs.BoolVar(&f.shared, "shared", false, "the PLANE owns this pool: every project on the installation may be placed onto it (create). Omitted, the pool is reserved to this key's project")
-	case "runner":
-		// No flags at all. Every subcommand either takes no argument (`list`) or names ONE machine by the
-		// id the server minted, so there is nothing to configure and nothing that could carry a credential.
 	case "model":
 		// THE PROVIDER WIRING (E29). There is deliberately NO flag carrying a provider key, for exactly the
 		// reason `secret` has none: a value in argv is a value in the shell history and in every `ps` on the
@@ -362,16 +359,9 @@ func (c *Client) execute(resource, sub string, pos []string, f *flags) error {
 			// say so with the same command that turned it on.
 			return c.do(http.MethodPatch, "/v1/runner-pools/"+esc(pos[0]), body(map[string]any{"strict_enrollment": f.strict}))
 		}
-	// The runner-pool enrolment key (E24 T3). `create` prints the value ONCE — it is the same
-	// create-only field `apikey create` returns, and the same rule applies: the CLI prints it and
-	// retains nothing.
-	case "runner":
-		switch sub {
-		case "list":
-			return c.do(http.MethodGet, "/v1/runners", nil)
-		case "cordon", "resume", "revoke", "approve":
-			return c.do(http.MethodPost, "/v1/runners/"+esc(pos[0])+"/"+sub, nil)
-		}
+		// The runner-pool enrolment key (E24 T3). `create` prints the value ONCE — it is the same
+		// create-only field `apikey create` returns, and the same rule applies: the CLI prints it and
+		// retains nothing.
 	}
 	return usageErr(resource)
 }
@@ -669,7 +659,6 @@ func usageErr(resource string) error {
 		"pool":   "create --name <n> --posture <sandboxed-linux|unsandboxed-host> [--os <o>] [--arch <a>] [--strict] | list | set-strict <pool_id> [--strict] (posture is fixed at creation: machines inherit it)",
 		// Spelled with its prefix, because that is the only spelling that works: the lifecycle is reached as
 		// `palai admin runner …` so it cannot be confused with the local runner container.
-		"runner": "list | approve <runner_id> | cordon <runner_id> | resume <runner_id> | revoke <runner_id> (revoke is IRREVERSIBLE)",
 		// The provider wiring (E29). `create` never takes a key: write it with `palai secret create` and
 		// name the REF here.
 		"model": "create --provider <provider-one|provider-two|openai-compatible> --secret-ref <name> [--endpoint <url>] | list | get <mconn_id> | verify <mconn_id> | models <mconn_id> | route --connection <mconn_id> --model <id> | routes",

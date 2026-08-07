@@ -116,7 +116,12 @@ func cliSubcommands(t *testing.T) map[string][]string {
 			}
 		}
 	}
-	if len(out) < 5 {
+	// 5 -> 4 ON 2026-08-07, DELIBERATELY. The floor is a parse-health check, not a count of what the CLI
+	// ought to have: `project`, `poolkey` and `runner` left in T1 because /v1 already served them, so the
+	// number a healthy parse produces went down with them. It is still a floor rather than an equality —
+	// what it must catch is a regexp that stopped matching, and four resources cannot be produced by a
+	// parse of nothing.
+	if len(out) < 4 {
 		t.Fatalf("only %d resource(s) had subcommands parsed out of admin.go — the switch shape moved, and a guard that parses nothing accepts everything", len(out))
 	}
 	return out
@@ -200,8 +205,14 @@ func TestTheRunbookCommandGuardCanActuallyFail(t *testing.T) {
 			t.Fatalf("%q is missing from the direct dispatch set %v — the parse produced nothing usable, so every assertion here is vacuous", member, direct)
 		}
 	}
-	if !slices.Contains(admin, "runner") {
-		t.Fatalf("`runner` is not reachable through `palai admin <resource>` (%v) — the machine lifecycle is reached ONLY that way, so a parse that lost it would accept a runbook printing anything", admin)
+	// ‼️ THE MEMBER WAS `runner` AND ITS REASON WAS "the machine lifecycle is reached ONLY that way".
+	// That sentence stopped being true on 2026-08-07: the lifecycle verbs left the CLI (T1) and the routes
+	// under /v1/runners are the surface now — api/runner_lifecycle_test.go drives them against the real mux.
+	// A floor keyed on a member the change deletes fails FOR the change rather than for a broken parse,
+	// which is the confusion a floor exists to prevent, so it is keyed on `pool` — a resource `admin`
+	// dispatches and T1 keeps.
+	if !slices.Contains(admin, "pool") {
+		t.Fatalf("`pool` is not reachable through `palai admin <resource>` (%v) — the admin dispatcher hands args[1] straight through, so a parse that lost it would accept a runbook printing anything", admin)
 	}
 
 	// The negative: `key` is not a subcommand of `pool`, which is what makes the E24 block's second line

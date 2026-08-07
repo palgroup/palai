@@ -32,7 +32,9 @@ proof:
   # The case TEXT above is shipped and is left byte-for-byte; the checksum reads neither this list nor the
   # text (caseChecksumParts hashes id + run_id + the release's contracts digest).
   #   - cmd/cli/internal/admin/admin_test.go:TestPoolKeyCreateRequiresAPoolAndPrintsTheValueOnce
-  - cmd/cli/internal/admin/admin_test.go:TestPoolKeyRevokeRejectsASecondPositional
+  #   - cmd/cli/internal/admin/admin_test.go:TestPoolKeyRevokeRejectsASecondPositional
+  # (withdrawn with the line above: the verb is gone, and this proof was passing because the resource
+  #  no longer existed rather than because a second positional was refused.)
   - apps/control-plane/internal/execution/runner_strict_component_test.go:TestStrictEnrolmentHoldsTheMachineOutOfTheRendezvousUntilAHumanApproves
   - apps/control-plane/internal/execution/runner_strict_component_test.go:TestStrictOffIsBitUnchanged
   - apps/control-plane/internal/execution/runner_strict_component_test.go:TestStrictIsOffOnEveryPoolThisTreeCreates
@@ -41,7 +43,11 @@ proof:
   - apps/control-plane/internal/fleet/strict_component_test.go:TestApprovalIsIdempotentAndJournalledOnce
   - apps/control-plane/internal/fleet/strict_component_test.go:TestApprovalCannotBeReachedByAnotherTenantOrByTheLifecycleVerbs
   - apps/control-plane/internal/fleet/strict_wiring_test.go:TestTheApprovalRouteIsMountedOnThePublicAPI
-  - apps/control-plane/internal/fleet/strict_wiring_test.go:TestTheApprovalVerbIsReachableFromTheAdminCLI
+  - apps/control-plane/internal/fleet/strict_wiring_test.go:TestTheApprovalHasAnOperatorSurfaceAHumanCanFollow
+  # RENAMED, not withdrawn (2026-08-07): the claim is unchanged — a strict pool must have an operator
+  # surface — and only the surface moved. It read the CLI's arity table for `palai admin runner approve`;
+  # that verb left with T1's API duplicates, so the guard now requires the approve REQUEST to be written
+  # down on docs/operations/runner-fleet.md. A route nobody is told to call is a waiting room with no door.
   - apps/control-plane/internal/fleet/strict_wiring_test.go:TestTheWaitingRoomIsEnforcedInTheConnectHandler
   - apps/control-plane/api/runner_approve_test.go:TestRunnerApproveRequiresTheApproveCapabilityAndNotProvision
   - apps/control-plane/api/runner_approve_test.go:TestRunnerApproveCarriesTheVerifiedScopeAndTheMachine

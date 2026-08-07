@@ -13,16 +13,27 @@ package fleet_test
 // has no verb. So the sites are pinned BY NAME, matched on the identifier and on the route STRING rather
 // than on a line — a rename breaks this and a reformat does not.
 //
-// WHY THESE THREE. The route is what makes the decision reachable over HTTP at all. The CLI verb is what
-// makes it reachable by a human, which is the whole subject of strict mode — an operator with only `curl` is
-// an operator who will turn the feature off. And `awaitApproval`'s call site inside the connect handler is
+// WHY THESE THREE. The route is what makes the decision reachable over HTTP at all. The OPERATOR PAGE is
+// what makes it reachable by a human, which is the whole subject of strict mode — an operator who cannot
+// find the remedy is an operator who will turn the feature off.
+//
+// ‼️ THAT SECOND SITE USED TO BE THE CLI VERB, and this paragraph used to say "an operator with only `curl`
+// is an operator who will turn the feature off". `palai admin runner approve` left on 2026-08-07 with T1's
+// other API duplicates, so `curl` is what an operator has — and the sentence that called it insufficient
+// was written when there was an alternative. What replaces it is not a weaker claim but a different one:
+// the request must be WRITTEN DOWN on the page an operator reads, because a route nobody is told to call is
+// a waiting room with no door. And `awaitApproval`'s call site inside the connect handler is
 // the ENFORCEMENT: without it the row still says `pending` and the machine takes work anyway, which is the
 // worst of the three failures because everything an operator can SEE would look correct.
 //
 // `WithLifecycle` in the composition root is the fourth site and is deliberately NOT re-asserted here: E24
 // T5's fence already pins it by name, and a second copy of that assertion is a second thing to keep in step.
 
-import "testing"
+import (
+	"os"
+	"strings"
+	"testing"
+)
 
 // TestTheApprovalRouteIsMountedOnThePublicAPI pins the HTTP door.
 func TestTheApprovalRouteIsMountedOnThePublicAPI(t *testing.T) {
@@ -37,16 +48,30 @@ func TestTheApprovalRouteIsMountedOnThePublicAPI(t *testing.T) {
 	}
 }
 
-// TestTheApprovalVerbIsReachableFromTheAdminCLI pins the human's route to it. `palai admin runner approve`
-// is what an operator actually runs, and the arity table is what makes the verb exist at all: a subcommand
-// missing from it is refused by execute() before any case is reached.
-func TestTheApprovalVerbIsReachableFromTheAdminCLI(t *testing.T) {
-	const cli = "../../../../cmd/cli/internal/admin/admin.go"
-	if !mentionsString(t, cli, "runner/approve") {
-		t.Errorf("%s does not carry `runner/approve` in positionalArity: `palai admin runner approve` is refused before it reaches a case, so the waiting room has no operator surface", cli)
+// TestTheApprovalHasAnOperatorSurfaceAHumanCanFollow pins the human's route to it, which is the half the
+// mount above does not cover: a route nobody is told to call is a waiting room with no door.
+//
+// ‼️ THE SURFACE MOVED ON 2026-08-07 AND THE CLAIM DID NOT. This guard used to read
+// cmd/cli/internal/admin/admin.go and require `runner/approve` in its arity table, because
+// `palai admin runner approve` was what an operator ran. That verb left with T1's API duplicates — /v1
+// already served every lifecycle action — so the operator's path is the documented request, and that is
+// what is pinned here. Keying it on the CLI after the CLI stopped carrying it would have failed for the
+// deletion rather than for a missing surface, which is the confusion this file exists to prevent.
+func TestTheApprovalHasAnOperatorSurfaceAHumanCanFollow(t *testing.T) {
+	// READ AS TEXT, NOT PARSED AS GO. mentionsString above resolves an identifier through the Go parser,
+	// which is right for a source file and cannot read a page — the first draft of this guard pointed it at
+	// markdown and failed on the leading `#`.
+	const page = "../../../../docs/operations/runner-fleet.md"
+	raw, err := os.ReadFile(page)
+	if err != nil {
+		t.Fatalf("read %s: %v", page, err)
 	}
-	if !mentionsString(t, cli, "approve") {
-		t.Errorf("%s dispatches no approve subcommand", cli)
+	body := string(raw)
+	if !strings.Contains(body, "/v1/runners/rnr_…/approve") {
+		t.Errorf("%s does not show an operator how to approve a pending machine: a strict pool would hold every machine it admitted a certificate to, forever, and the only remedy an operator could find would be to turn strict enrolment off", page)
+	}
+	if !strings.Contains(body, "strict") {
+		t.Errorf("%s never mentions strict enrolment — the page that carries the remedy must also carry the state it is a remedy for", page)
 	}
 }
 

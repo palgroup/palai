@@ -12,10 +12,10 @@ import (
 	"testing"
 )
 
-// TestAdminVerbReachesTheRunnerLifecycle drives the top-level dispatcher for each of the five verbs. The
-// stub records the method and path, so a mis-spelled prefix (or a `palai runner` that would read as an
-// operation on the local runner CONTAINER) shows up as a wrong path rather than as a passing test.
-func TestAdminVerbReachesTheRunnerLifecycle(t *testing.T) {
+// TestAdminVerbReachesTheAdminPackage drives the top-level dispatcher. The stub records the method and
+// path, so a mis-spelled prefix — or a resource `palai <x>` would read as something else entirely —
+// shows up as a wrong path rather than as a passing test.
+func TestAdminVerbReachesTheAdminPackage(t *testing.T) {
 	var got struct{ method, path string }
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got.method, got.path = r.Method, r.URL.Path
@@ -30,13 +30,13 @@ func TestAdminVerbReachesTheRunnerLifecycle(t *testing.T) {
 		args                 []string
 		wantMethod, wantPath string
 	}{
-		{[]string{"admin", "runner", "list"}, "GET", "/v1/runners"},
-		{[]string{"admin", "runner", "cordon", "rnr_one"}, "POST", "/v1/runners/rnr_one/cordon"},
-		{[]string{"admin", "runner", "resume", "rnr_one"}, "POST", "/v1/runners/rnr_one/resume"},
-		{[]string{"admin", "runner", "revoke", "rnr_one"}, "POST", "/v1/runners/rnr_one/revoke"},
-		// E24 T6: the verb docs/operations/runner-fleet.md tells an operator to type when `palai up` reports a
-		// machine pending. A mis-spelled prefix here would be a runbook step that does nothing.
-		{[]string{"admin", "runner", "approve", "rnr_one"}, "POST", "/v1/runners/rnr_one/approve"},
+		// ‼️ THE VEHICLE IS `pool` SINCE 2026-08-07, AND THE CLAIM IS UNCHANGED. This table used to drive the
+		// five `admin runner` verbs; that resource left the CLI with the rest of T1's API duplicates, and the
+		// machine lifecycle is now reached over /v1 directly. What this test is ABOUT is dispatch() — that
+		// `palai admin <resource>` hands the resource through to the admin package at all — so it needs a
+		// resource that still exists, not the one it happened to be written against.
+		{[]string{"admin", "pool", "list"}, "GET", "/v1/runner-pools"},
+		{[]string{"admin", "apikey", "list"}, "GET", "/v1/api-keys"},
 	} {
 		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {
 			got.method, got.path = "", ""

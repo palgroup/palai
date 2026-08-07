@@ -2,6 +2,19 @@ package api
 
 // THE MACHINE-LIFECYCLE ROUTES (E24 T5), against the real mux and the real provision gate.
 //
+// ‼️ AND SINCE 2026-08-07 THIS FILE IS THE ONLY PLACE THE REACHABILITY CLAIM LIVES. E24 T5 wrote
+// cmd/cli/internal/admin/runner_lifecycle_test.go for §3.6 D15: `Revoke()` — SAN-011's hard stop — had
+// been implemented, tested and catalogued while NOTHING IN THE TREE CALLED IT, and that file existed to
+// keep a caller in front of it. The caller it kept was `palai admin runner`, which left with T1's other
+// API duplicates.
+//
+// The claim did not leave with it, which is why the file could be deleted rather than moved: the routes
+// below ARE the caller now, and they are driven here against the real mux — the verb reaches the state
+// change, a key without `provision` is refused, another tenant's machine is a 404, and a verb the mux does
+// not serve is refused. tests/uat/fleet/reachable_test.go names `Revoke` and `Resume` in its production-
+// caller sweep besides. What is gone is the CLI's own rendering and argument parsing, which had no second
+// home because they had no second surface.
+//
 // §3.6 D15: `Revoke()` — SAN-011's hard stop for a compromised runner — was implemented, tested,
 // catalogued, and reachable from nothing. These are the routes that end that, so what they have to prove is
 // not only that they answer but that they answer with the RIGHT verb about the RIGHT machine, refuse a key

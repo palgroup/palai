@@ -248,34 +248,17 @@ func TestAPIKeyFileFlagReadsKeyFromFile(t *testing.T) {
 //
 // A claim that moved is not a claim that was lost, and a claim that a URL makes impossible is stronger
 // than one a flag parser enforced.
-func TestPoolKeyRevokeRejectsASecondPositional(t *testing.T) {
-	var cap capture
-	srv := stubServer(t, http.StatusOK, `{}`, &cap)
-	t.Setenv("PALAI_BASE_URL", srv.URL)
-	t.Setenv("PALAI_API_KEY", "admin-key-xyz")
-	err := Run("poolkey", []string{"revoke", "rpk_1", "rpk_secretvaluepasted"}, io.Discard, strings.NewReader(""))
-	if err == nil {
-		t.Fatal("a second positional was accepted")
-	}
-	if strings.Contains(err.Error(), "rpk_secretvaluepasted") {
-		t.Fatalf("the error echoed the extra positional, which may be a credential: %v", err)
-	}
-	if cap.method != "" {
-		t.Fatalf("the rejected command still issued %s %s", cap.method, cap.path)
-	}
-}
+// ‼️ TestPoolKeyRevokeRejectsASecondPositional WENT WITH THE VERB (2026-08-07), AND IT WAS ALREADY
+// PASSING FOR THE WRONG REASON when it was removed. With `poolkey` gone, `Run("poolkey", …)` returns a
+// usage error — so "a second positional was rejected" was satisfied by the resource not existing, and "the
+// error did not echo the extra positional" was satisfied by an error that never saw it. Both assertions
+// were green and neither was about anything: the shape this tree files under "an assertion that passes for
+// a reason unrelated to its claim".
+//
+// Its subject was a CLI argv hazard — a pool key pasted as an extra argument and echoed back. There is no
+// CLI to paste it into now; the same value typed into a curl lives in the operator's shell history, which
+// is a different problem with a different owner.
 
-// THE CLI VERB THE CONSOLE CLAIMED EXISTED (E29).
-//
-// apps/web-console/lib/routes.ts told every operator, in the lead of the model-wiring screen: "This is a
-// read surface — every row here is created by the API or the CLI." The API half was true. THE CLI HALF WAS
-// NOT: `grep -rn 'model-connections' cmd/ | grep -v _test` returned nothing, so an operator who went looking
-// for the verb the console named found no verb at all. That sentence is now corrected AND made true, and
-// this table is the "made true" half.
-//
-// NOTE WHAT IS NOT IN ANY OF THESE ARG LISTS: a credential. A provider key is written with
-// `palai secret create` (stdin), and a connection then names the REF. That split is the whole write-only
-// discipline, and preserving it here is why there is no `--api-key` flag to add.
 func TestModelConnectionSubcommandsHitCorrectEndpoint(t *testing.T) {
 	cases := []struct {
 		name                                 string

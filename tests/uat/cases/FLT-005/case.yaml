@@ -23,6 +23,13 @@ proof:
   - apps/control-plane/api/runner_lifecycle_test.go:TestRunnerLifecycleServesNoOtherVerb
   - apps/control-plane/api/runner_lifecycle_test.go:TestRunnerReadRendersItsLiveLeaseCountIncludingZero
   - apps/control-plane/internal/fleet/placement_wiring_test.go:TestTheMachineLifecycleIsWiredIntoTheCompositionRoot
-  - cmd/cli/internal/admin/runner_lifecycle_test.go:TestRunnerLifecycleCLIReachesTheRealRouter
-  - cmd/cli/internal/admin/runner_lifecycle_test.go:TestRunnerLifecycleNeedsTheProvisionCapability
-  - cmd/cli/admin_verb_test.go:TestAdminVerbReachesTheRunnerLifecycle
+  # WITHDRAWN 2026-08-07 — `palai admin runner` left the CLI (T1: /v1 already served list/approve/cordon/
+  # resume/revoke). These three proved the CLI REACHED the lifecycle; §3.6 D15's claim — that Revoke() is
+  # not implemented-and-unreachable — did not leave with them. It is proved by the routes themselves in
+  # apps/control-plane/api/runner_lifecycle_test.go (already on this list above), which drives every verb
+  # against the real mux plus the provision gate and the cross-tenant 404, and by
+  # tests/uat/fleet/reachable_test.go's production-caller sweep, which names Revoke and Resume.
+  # The case TEXT is shipped and left byte-for-byte.
+  #   - cmd/cli/internal/admin/runner_lifecycle_test.go:TestRunnerLifecycleCLIReachesTheRealRouter
+  #   - cmd/cli/internal/admin/runner_lifecycle_test.go:TestRunnerLifecycleNeedsTheProvisionCapability
+  #   - cmd/cli/admin_verb_test.go:TestAdminVerbReachesTheRunnerLifecycle

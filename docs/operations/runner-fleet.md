@@ -58,7 +58,7 @@ cannot be reached by a run in pool B at all.
 ```bash
 palai pool create --name mac-pool --posture unsandboxed-host --os darwin --arch arm64
 palai pool list                    # every pool: posture, shape, strict mode, queue depth
-palai admin runner list            # every machine: pool, state, last seen
+curl -sS "$PALAI_BASE_URL/v1/runners" -H "Authorization: Bearer $PALAI_API_KEY"   # every machine: pool, state, last seen
 ```
 
 **A pool's posture is fixed when you create it, and that is deliberate.** A machine **inherits** its pool's
@@ -190,8 +190,8 @@ re-gate machines you have doubts about. For those, §4.
 
 ```bash
 palai up                                    # ... fleet   2 pool(s), 1 active runner(s), 1 pending approval
-palai admin runner list                     # which machine, and its state
-palai admin runner approve rnr_…            # admit it
+curl -sS "$PALAI_BASE_URL/v1/runners" -H "Authorization: Bearer $PALAI_API_KEY"                      # which machine, and its state
+curl -sS -X POST "$PALAI_BASE_URL/v1/runners/rnr_…/approve" -H "Authorization: Bearer $PALAI_API_KEY"   # admit it
 ```
 
 **Who may approve.** Two independent gates, and both are the ones described in
@@ -275,9 +275,12 @@ Three verbs, each about **one** machine, each recorded in the database so a cont
 forget it:
 
 ```bash
-palai admin runner cordon  rnr_…    # no NEW leases; the session stays, an in-flight lease finishes
-palai admin runner resume  rnr_…    # put it back
-palai admin runner revoke  rnr_…    # IRREVERSIBLE: sessions cut, in-flight lease ended, reconnects refused
+# no NEW leases; the session stays, an in-flight lease finishes
+curl -sS -X POST "$PALAI_BASE_URL/v1/runners/rnr_…/cordon" -H "Authorization: Bearer $PALAI_API_KEY"
+# put it back
+curl -sS -X POST "$PALAI_BASE_URL/v1/runners/rnr_…/resume" -H "Authorization: Bearer $PALAI_API_KEY"
+# IRREVERSIBLE: sessions cut, in-flight lease ended, reconnects refused
+curl -sS -X POST "$PALAI_BASE_URL/v1/runners/rnr_…/revoke" -H "Authorization: Bearer $PALAI_API_KEY"
 ```
 
 - **Cordon** is how you drain a Mac before unplugging it. `GET /v1/runners/{id}` reports

@@ -81,13 +81,18 @@ var expectedFleetCatalog = map[string]struct {
 	// vanished (see the WITHDRAWN note in cases/FLT-003/case.yaml: the one-time disclosure is asserted
 	// in runner_pool_key_component_test.go against a real database, and "a create must name its pool"
 	// became structural in POST /v1/runner-pools/{pool_id}/keys).
-	"FLT-003": {"component-real", 31, "scope, hash, constant-time comparison, expiry, the three halves of revocation, the key that is not an API key, the value that reaches no row or log, and strict enrolment with its bit-unchanged default"},
+	// 31 -> 30 (2026-08-07): the `poolkey` verb's second CLI proof went with it, and it was passing
+	// because the resource no longer existed rather than because a second positional was refused.
+	"FLT-003": {"component-real", 30, "scope, hash, constant-time comparison, expiry, the three halves of revocation, the key that is not an API key, the value that reaches no row or log, and strict enrolment with its bit-unchanged default"},
 	// T4 — the tenant and the park. The wake and the run left ALONE are both listed: a waker that woke
 	// everything would satisfy the first.
 	"FLT-004": {"component-real", 14, "the cross-tenant refusal, the park instead of the dead letter, the wake that does not reserve, the other waiting run left alone, and the pool recorded on the run"},
 	// T5 — one machine's lifecycle. The restart is the whole claim, and the unrevoked machine still taking a
 	// lease through the new process is what keeps it a revocation rather than an outage.
-	"FLT-005": {"component-real", 21, "the revocation that survives a restart, the cordon that survives it and the resume that clears it, the irreversible journalled revoke, the heartbeat that advances liveness, the whole-gateway drain over two machines, and the parked-run TTL"},
+	// 21 -> 18 (2026-08-07): three CLI proofs withdrew with `palai admin runner`. §3.6 D15's claim —
+	// that Revoke() is not implemented-and-unreachable — stays, proved by the ROUTES in
+	// api/runner_lifecycle_test.go (already listed) and by the production-caller sweep.
+	"FLT-005": {"component-real", 18, "the revocation that survives a restart, the cordon that survives it and the resume that clears it, the irreversible journalled revoke, the heartbeat that advances liveness, the whole-gateway drain over two machines, and the parked-run TTL"},
 }
 
 // caseAssertion is the bundle's per-case sentence, DERIVED from this catalog and from the case's own proof

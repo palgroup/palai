@@ -16,15 +16,142 @@ package admin
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"flag"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	capi "github.com/palgroup/palai/apps/control-plane/api"
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
 )
+
+// fakeFleet is the RunnerRegistryAPI stub the pool tests drive. It moved here on 2026-08-07 from
+// runner_lifecycle_test.go, which was deleted with the `palai admin runner` verb it existed to keep a
+// caller in front of — the fixture outlived the file because `pool` still uses it. Only the pieces
+// pool_test.go actually reaches are kept; a stub carrying methods nothing calls is a second surface
+// with no caller, which is the defect the deleted file was written about.
+type fakeFleet struct {
+	action string
+	id     string
+	// scope is the verified scope an APPROVE carried (E24 T6). The lifecycle verbs take org/project strings;
+	// an approval takes the whole scope because the principal is derived from its key id.
+	scope middleware.Scope
+	// The E28 T1 birth path: what the control plane was asked to CREATE, and which pool it was asked to open
+	// the waiting room on. `strict` is a pointer so "asked for false" and "never asked" stay different
+	// answers — the same reason api.RunnerItem.ActiveLeases is one.
+	created createdPool
+	// createdProject is the SCOPE the create arrived under, and it is recorded because it is the field the
+	// free-pool contract is about: "" is the plane's pool, a project is one reserved to that tenant. The
+	// method used to take it as `_`, so a fake could not tell the two apart -- and a fake that discards the
+	// deciding field answers every question about it with silence.
+	createdProject string
+	strictID       string
+	strict         *bool
+}
+
+// createdPool is what a `pool create` reached the control plane with. It is declared here rather than
+// reusing the api type so that pool_test.go's RED is a BEHAVIOURAL failure (the CLI has no `pool` resource,
+// so `execute` returns usageErr) rather than a compile error against a type that does not exist yet.
+type createdPool struct {
+	Name, Posture, OS, Arch string
+	StrictEnrollment        bool
+	// IsolationMode is what the operator asked every machine in this pool to be able to PROVIDE
+	// (000007). Recorded here because a flag the CLI parses and never sends is indistinguishable from
+	// one it sends, on the CLI's own output alone.
+	IsolationMode string
+}
+
+func (f *fakeFleet) ListRunners(context.Context, string, capi.RunnerListWindow) ([]capi.RunnerItem, error) {
+	return []capi.RunnerItem{{
+		ID: "rnr_one", PoolID: "pool_mac", Label: "mac-mini-01", DNS: "rnr_one.runners.palai.internal",
+		State: "active", Posture: "unsandboxed-host", Capacity: 1,
+		CreatedAt: time.Unix(1700000000, 0).UTC(), LastSeenAt: time.Unix(1700000060, 0).UTC(),
+	}}, nil
+}
+
+func (f *fakeFleet) GetRunner(_ context.Context, _, id string) (capi.RunnerItem, bool, error) {
+	return capi.RunnerItem{ID: id, State: "active", PoolID: "pool_mac"}, true, nil
+}
+
+func (f *fakeFleet) ListRunnerPools(context.Context, string, capi.RunnerListWindow) ([]capi.RunnerPoolItem, error) {
+	if f.created.Name == "" {
+		return []capi.RunnerPoolItem{}, nil
+	}
+	// The pool the create made, so `palai pool list` has something to render and the CLI's read half is
+	// asserted against a pool that was actually created rather than a canned row.
+	return []capi.RunnerPoolItem{{
+		ID: "pool_created", Name: f.created.Name, Posture: f.created.Posture,
+		OS: f.created.OS, Arch: f.created.Arch, StrictEnrollment: f.created.StrictEnrollment,
+		CreatedAt: time.Unix(1700000000, 0).UTC(),
+	}}, nil
+}
+
+// CreateRunnerPool and SetRunnerPoolStrictEnrollment are the E28 T1 surface `palai pool` fronts.
+func (f *fakeFleet) CreateRunnerPool(_ context.Context, project string, in capi.RunnerPoolCreate) (capi.RunnerPoolItem, error) {
+	f.createdProject = project
+	f.created = createdPool{Name: in.Name, Posture: in.Posture, OS: in.OS, Arch: in.Arch,
+		StrictEnrollment: in.StrictEnrollment, IsolationMode: in.IsolationMode}
+	return capi.RunnerPoolItem{
+		ID: "pool_created", Name: in.Name, Posture: in.Posture, OS: in.OS, Arch: in.Arch,
+		StrictEnrollment: in.StrictEnrollment, CreatedAt: time.Unix(1700000000, 0).UTC(),
+	}, nil
+}
+
+func (f *fakeFleet) SetRunnerPoolStrictEnrollment(_ context.Context, _, poolID string, strict bool) (capi.RunnerPoolItem, bool, error) {
+	f.strictID, f.strict = poolID, &strict
+	return capi.RunnerPoolItem{ID: poolID, Name: "mac-pool", Posture: "unsandboxed-host", StrictEnrollment: strict}, true, nil
+}
+
+func (f *fakeFleet) MintRunnerPoolKey(context.Context, string, string, *time.Time) (capi.RunnerPoolKeyItem, bool, error) {
+	return capi.RunnerPoolKeyItem{}, false, nil
+}
+
+func (f *fakeFleet) ListRunnerPoolKeys(context.Context, string, string) ([]capi.RunnerPoolKeyItem, error) {
+	return []capi.RunnerPoolKeyItem{}, nil
+}
+
+func (f *fakeFleet) RevokeRunnerPoolKey(context.Context, string, string) (capi.RunnerPoolKeyItem, bool, error) {
+	return capi.RunnerPoolKeyItem{}, false, nil
+}
+
+// SetRunnerState is the surface this task adds and the surface this test demands: the operator's
+// cordon/resume/revoke of ONE machine, named by the id the server minted.
+func (f *fakeFleet) SetRunnerState(_ context.Context, _, id, action string) (capi.RunnerItem, bool, error) {
+	f.action, f.id = action, id
+	state := map[string]string{"cordon": "cordoned", "resume": "active", "revoke": "revoked"}[action]
+	return capi.RunnerItem{ID: id, State: state, PoolID: "pool_mac"}, true, nil
+}
+
+// ApproveRunner is E24 T6's surface: the human a strict pool waits for. It records the scope as well as the
+// id, because the deciding principal is derived from the scope one layer down and a CLI path that reached a
+// route which dropped it would approve as nobody.
+func (f *fakeFleet) ApproveRunner(_ context.Context, scope middleware.Scope, id string) (capi.RunnerItem, capi.ApprovalOutcome, error) {
+	f.action, f.id, f.scope = "approve", id, scope
+	return capi.RunnerItem{ID: id, State: "active", PoolID: "pool_mac"},
+		capi.ApprovalOutcome{Found: true, Applied: true}, nil
+}
+
+// grantSystemAlongside translates a test's ordinary-capability intent into a Scopes value that ALSO
+// carries `system` (Faz A.1 Task 3): every fleet route this package's tests drive now sits behind
+// router.go's systemOnly gate, on top of whichever `provision`/`approve` check the route already had. nil
+// meant "the unrestricted admin key", and that idiom cannot survive literally — Scope.HasSystem() is
+// deliberately excluded from the empty-set-is-unrestricted rule (middleware/auth_test.go pins it) — so nil
+// is translated to the two ordinary capabilities this package's fleet routes check, `provision` and
+// `approve`, alongside `system`. A non-nil list is a caller testing ONE capability in isolation, and
+// `system` is appended so the only question left is the one the test names.
+func grantSystemAlongside(scopes []string) []string {
+	if scopes == nil {
+		return []string{middleware.ScopeSystem, "provision", "approve"}
+	}
+	return append([]string{middleware.ScopeSystem}, scopes...)
+}
+
+// TestRunnerLifecycleCLIReachesTheRealRouter is RED (3), REACHABILITY. It demands a surface that does
+// not exist today — `palai admin runner cordon|resume|revoke|list` and the routes behind them — which
+// is the point: the test is what turns "implemented" into "reachable".
 
 // TestPoolCreateReachesTheRealRouter is RED (2). `palai pool create --name mac-pool --posture
 // unsandboxed-host` returns `usageErr` today: `pool` is not a resource `execute` knows, so the
