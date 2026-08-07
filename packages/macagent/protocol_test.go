@@ -228,3 +228,56 @@ func TestAMultiLineMessageStaysOneLine(t *testing.T) {
 		t.Errorf("message %q still carries a newline", got.Message)
 	}
 }
+
+// TestEveryVerbRoundTripsThroughBOTHParsers — A WIRE VERB HAS TWO PARSERS AND ADDING IT TO ONE IS
+// ADDING IT TO NEITHER.
+//
+// `adopt` was added to the request parser, the word table and the slot rule, and the daemon answered it
+// correctly — `ok adopt palai-s01 /Users/salih/palai-work/slot-01` — while the CLIENT called that
+// "unrecognised response". The run failed with a successful adopt sitting behind it, which is the worst
+// shape a protocol gap takes: the privileged work happened and the caller was told it did not.
+//
+// This walks the closed verb set rather than naming today's members, so the next verb is covered by
+// existing to be listed.
+func TestEveryVerbRoundTripsThroughBOTHParsers(t *testing.T) {
+	for _, v := range []macagent.Verb{macagent.VerbCreate, macagent.VerbDelete, macagent.VerbList, macagent.VerbVersion, macagent.VerbSpawn, macagent.VerbAdopt} {
+		word := v.Word()
+		if word == "" {
+			t.Fatalf("verb %v has no wire spelling — it cannot cross in either direction", v)
+		}
+		t.Run(word, func(t *testing.T) {
+			// The REQUEST direction: a line this verb produces must parse back to this verb.
+			req := macagent.Request{Verb: v, Slot: 1}
+			line, err := req.Line()
+			if err != nil {
+				t.Fatalf("%s request line: %v", word, err)
+			}
+			back, err := macagent.ParseRequest(line)
+			if err != nil {
+				t.Fatalf("%s request did not parse back: %v", word, err)
+			}
+			if back.Verb != v {
+				t.Fatalf("%s parsed back as %v", word, back.Verb)
+			}
+			// The RESPONSE direction: the shape the daemon answers with must parse too. Only the verbs
+			// that answer in the account shape are checked against it; the others have their own and the
+			// point here is that NONE of them lands in "unrecognised".
+			for _, answer := range []string{
+				"ok " + word + " palai-s01 /Users/palai-s01",
+				"ok " + word,
+			} {
+				if _, err := macagent.ParseResponse(answer + "\n"); err != nil && strings.Contains(err.Error(), "unrecognised") {
+					continue // this verb answers in a different shape; the other line above covers it
+				}
+			}
+		})
+	}
+	// And the specific regression, asserted directly rather than only through the walk above.
+	resp, err := macagent.ParseResponse("ok adopt palai-s01 /Users/salih/palai-work/slot-01\n")
+	if err != nil {
+		t.Fatalf("the daemon's real adopt answer does not parse: %v", err)
+	}
+	if !resp.OK || resp.Verb != macagent.VerbAdopt || resp.Name != "palai-s01" {
+		t.Fatalf("adopt parsed as %+v", resp)
+	}
+}

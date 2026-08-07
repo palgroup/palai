@@ -489,13 +489,21 @@ func ParseResponse(line string) (Response, error) {
 				return Response{}, fmt.Errorf("malformed pid %q in %q", fields[3], line)
 			}
 			return OKSpawn(fields[2], pid), nil
-		case "create", "delete":
+		// ‼️ EVERY VERB THAT ANSWERS IN THIS SHAPE MUST BE LISTED HERE, AND `adopt` WAS NOT. It was added
+		// to the REQUEST parser and to the word table and the daemon answered it correctly —
+		// `ok adopt palai-s01 /Users/salih/palai-work/slot-01` — while the client called that
+		// "unrecognised response" and the run failed with a successful adopt behind it. A wire verb has
+		// two parsers and adding it to one is adding it to neither.
+		case "create", "delete", "adopt":
 			if len(fields) != 4 {
 				return Response{}, fmt.Errorf("malformed %s response %q", fields[1], line)
 			}
 			verb := VerbCreate
-			if fields[1] == "delete" {
+			switch fields[1] {
+			case "delete":
 				verb = VerbDelete
+			case "adopt":
+				verb = VerbAdopt
 			}
 			return OKAccount(verb, fields[2], fields[3]), nil
 		}
