@@ -29,47 +29,63 @@ import (
 	"strings"
 )
 
-// MaxSlot is the highest session index, mirroring MAX_SESSIONS in scripts/ops/mac-sessions.sh. The two
-// must agree: a slot this daemon creates is one that tooling has to be able to name and delete.
+// MaxSlot is the highest session index. It bounds the namespace rather than the machine: how many
+// sessions a Mac actually runs at once is capacity the control plane declares, and this is only the
+// ceiling on how high a slot number may go before the arithmetic below stops being checkable.
 const MaxSlot = 99
 
-// UIDBase is the uid this namespace allocates from, mirroring UID_BASE in mac-sessions.sh. Slot N gets
+// UIDBase is the uid this namespace allocates from. Slot N gets
 // uid UIDBase+N, and that arithmetic is load-bearing rather than cosmetic — the deletion guard refuses
 // any record whose uid is not the one this formula would have produced, which is how a renamed or
 // hand-edited account fails to look like ours.
 const UIDBase = 700
 
-// AccountGroupName is the group every session account is created in, and AccountGID is its id.
+// SlotGroupName is the group slot N's account is created in, SlotGID is its id, and there is ONE PER
+// SLOT rather than one for the fleet.
 //
 // ‼️ IT IS NOT `staff` (20), AND IT USED TO BE, AND THAT WAS THE WHOLE ISOLATION MISSING ITS POINT.
 // Measured on this machine on 2026-08-06: `/Users/salih` is `drwxr-x---` owned by `salih:staff`, and
 // every local macOS account is created with PrimaryGroupID 20 unless told otherwise. So a session
 // account in `staff` traverses the operator's home by the GROUP bit and reads every project under it —
-// `ls /Users/salih/workspace` from inside a session listed sixteen unrelated checkouts. The uid drop
-// would have isolated sessions from EACH OTHER and left the machine's owner completely exposed, which
-// is worse than no isolation, because a deployment that wired it would believe it had a boundary.
+// `ls /Users/salih/workspace` from inside a session listed sixteen unrelated checkouts.
 //
-// A DEDICATED GROUP IS THE BOUNDARY, and it is only a boundary while nothing else joins it. Nothing
-// does: the two creators below put session accounts in it and no other code adds a member, so the
-// operator's home admits these accounts by neither owner, group, nor other.
+// ‼️ AND IT IS NOT ONE SHARED GROUP EITHER, WHICH IS THE SECOND HALF AND COST A DAY. A single
+// `palai-sessions` group made the operator's home unreachable and left every session reachable by every
+// OTHER session: the moment a workspace is made group-accessible so its own account can use it, a shared
+// group has handed it to every tenant on the Mac. Two customers on one machine is the case this fleet
+// exists to serve, so the group has to be as narrow as the thing it protects.
 //
-// 700 mirrors [UIDBase] deliberately — slot N is uid 700+N and the group they share is 700, so an
-// operator reading `ls -l` sees one namespace rather than two unrelated numbers. Both were free on a
-// stock macOS (701/702 are Apple's sharepoint groups; 700 is not allocated).
+// THE GROUP IS THE BOUNDARY BECAUSE THE OWNER CANNOT BE. This tree's tools run CONTROL-PLANE side
+// against the same host allocation (main.go's §24 ceiling), so the control plane's uid must keep read
+// and write on a session's tree — an allocation owned outright by the session account answered
+// "permission denied" to the file tool, measured on 2026-08-08 with the agent reporting it in its own
+// words. So the owner stays with whoever created the tree, the GROUP is the slot's alone, and the mode
+// is 0770: both principals work, and no third one is in that group.
 //
-// IT IS A CONSTANT HERE BECAUSE IT HAS TWO WRITERS AND ONE READER THAT MUST AGREE WITH BOTH. The
-// writers are the creators — cmd/palai-agentd/accounts.go's `-GID` argument and mac-sessions.sh's —
-// and the reader is the control plane, which hands a uid/gid pair to whatever drops privilege to it
-// (execution.SessionAccount). A gid the account was not created with is not a smaller boundary, it is
-// a command that cannot open its own home directory, so the number lives in one place and both
-// creators spend it. The shell one spent a LITERAL `20` until 2026-08-06 while this comment already
-// claimed otherwise; TestBothAccountCreatorsSpendTheSameGroup now measures the claim.
-const (
-	AccountGroupName = "palai-sessions"
-	AccountGID       = 700
-)
+// 800 does NOT mirror [UIDBase], and the difference is deliberate. A gid equal to a uid reads as one
+// number in `ls -n` and in a stat, and this tree has been burned by values that look identical until
+// the day they are not; 800+N against 700+N says which namespace a number came from at a glance.
+const GIDBase = 800
 
-// namePrefix is the account-name prefix this daemon owns. Unlike mac-sessions.sh's PREFIX it is NOT
+// SlotGID is slot N's gid. See [SlotGroupName] for why there is one per slot.
+func SlotGID(slot int) (int, error) {
+	if err := ValidSlot(slot); err != nil {
+		return 0, err
+	}
+	return GIDBase + slot, nil
+}
+
+// SlotGroupName mirrors [AccountName], so an operator reading `dscl . -list /Groups` sees the same slot
+// on both sides.
+func SlotGroupName(slot int) (string, error) {
+	name, err := AccountName(slot)
+	if err != nil {
+		return "", err
+	}
+	return name + "-grp", nil
+}
+
+// namePrefix is the account-name prefix this daemon owns. It is NOT
 // overridable. That script needed a variable so its own test suite could scan a namespace no real
 // machine uses; a root daemon has no such need, and an environment-settable prefix on a privileged
 // process is a way to aim it at a namespace somebody else owns.
@@ -237,7 +253,7 @@ func AccountName(slot int) (string, error) {
 	return fmt.Sprintf("%s%02d", namePrefix, slot), nil
 }
 
-// AccountUID is the uid slot N is allocated, mirroring session_uid in mac-sessions.sh.
+// AccountUID is the uid slot N is allocated, derived from the slot alone.
 func AccountUID(slot int) (int, error) {
 	if err := ValidSlot(slot); err != nil {
 		return 0, err

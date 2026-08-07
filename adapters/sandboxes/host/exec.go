@@ -73,13 +73,23 @@ func credentialFor(runAs *toolbroker.RunAs) (*syscall.Credential, error) {
 	}
 	// THE UID IS BOUNDED BEFORE ANYTHING IS SPENT ON IT. This value crossed a wire from a process the
 	// tenant's model can influence; `Uid: 0` is expressible there and must not be expressible here.
-	if _, ok := macagent.SlotFromUID(runAs.UID); !ok {
+	slot, ok := macagent.SlotFromUID(runAs.UID)
+	if !ok {
 		return nil, fmt.Errorf("%w: uid %d is not one palai-agentd allocates (%d..%d)",
 			ErrRunAsOutsideNamespace, runAs.UID, macagent.UIDBase+1, macagent.UIDBase+macagent.MaxSlot)
 	}
-	if runAs.GID != macagent.AccountGID {
-		return nil, fmt.Errorf("%w: gid %d is not the group session accounts are created in (%d)",
-			ErrRunAsOutsideNamespace, runAs.GID, macagent.AccountGID)
+	// ‼️ THE GID IS CHECKED AGAINST THE SLOT THE UID NAMES, not against a fleet-wide constant. Each
+	// session account now has its OWN group, so "is this a session gid" is no longer the question worth
+	// asking — a uid from slot 07 arriving with slot 08's gid would pass that one and hand a tenant the
+	// group bit on another tenant's workspace, which is precisely the boundary the per-slot group exists
+	// to draw. The pair has to agree, and only the pair.
+	want, err := macagent.SlotGID(slot)
+	if err != nil {
+		return nil, fmt.Errorf("%w: uid %d names slot %d, which has no gid: %v", ErrRunAsOutsideNamespace, runAs.UID, slot, err)
+	}
+	if runAs.GID != want {
+		return nil, fmt.Errorf("%w: uid %d is slot %d, whose group is %d, and the request carries gid %d",
+			ErrRunAsOutsideNamespace, runAs.UID, slot, want, runAs.GID)
 	}
 	return &syscall.Credential{Uid: uint32(runAs.UID), Gid: uint32(runAs.GID)}, nil
 }

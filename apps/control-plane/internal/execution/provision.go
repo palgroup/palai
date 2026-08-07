@@ -16,7 +16,6 @@ import (
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 
 	"github.com/palgroup/palai/storage"
-	"os"
 )
 
 // SetWorkspaceProvisioner wires the root run's workspace auto-provisioning (spec §29.7-30.3, E09 Task
@@ -121,6 +120,23 @@ func (o *Orchestrator) planRootWorkspace(ctx context.Context, tenant coordinator
 	if err != nil || !found {
 		return workspacePlan{}, false, err
 	}
+	// ‼️ THE ACCOUNT IS ACQUIRED HERE, BEFORE ANY PATH IS NAMED, and that order is the whole of this
+	// function's contract with the machine. The path in this plan travels out in the LEASE OFFER and the
+	// runner lays the directory out at it — so a path chosen before the slot is known is a directory the
+	// daemon will never be asked about, and a directory the daemon adopts is one the runner never wrote
+	// to. Both halves succeed and the workspace is empty, which is exactly what happened on 2026-08-08:
+	// `repo` existed with no `.git` in it and the head read reported the bytes were on another machine.
+	//
+	// Acquire is idempotent per session, so re-entering this planner for a later run in the same session
+	// returns the same slot rather than consuming a second one.
+	var account SessionAccount
+	if o.sessionAccounts != nil {
+		acquired, aerr := o.sessionAccounts.Acquire(ctx, sessionID)
+		if aerr != nil {
+			return workspacePlan{}, false, fmt.Errorf("plan workspace for session %s: %w", sessionID, aerr)
+		}
+		account = acquired
+	}
 	switch statemachines.WorkspaceState(ws.State) {
 	case statemachines.WorkspaceReady, statemachines.WorkspaceLeased:
 		// A later run in the session: ready = released by a prior run; leased = a prior attempt whose
@@ -144,7 +160,7 @@ func (o *Orchestrator) planRootWorkspace(ctx context.Context, tenant coordinator
 		// are in an archive, which is the loudest possible way to lose a user's work quietly.
 		allocID := "alloc_" + randHex16()
 		return workspacePlan{ws: ws, sessionID: sessionID, allocID: allocID,
-			hostPath: filepath.Join(o.provisionRoot, allocID), resume: true}, true, nil
+			hostPath: o.allocationPath(account, allocID), resume: true}, true, nil
 	case statemachines.WorkspaceSnapshotting:
 		// An idle sweep died between claiming the workspace and finishing with it. The bytes are still on
 		// disk — the releaser deletes them only after reaching `paused` — so the repair is to give the
@@ -167,8 +183,20 @@ func (o *Orchestrator) planRootWorkspace(ctx context.Context, tenant coordinator
 		// fresh and idempotently — a partial allocation from a failed attempt is abandoned, a new one
 		// cloned.
 		allocID := "alloc_" + randHex16()
-		return workspacePlan{ws: ws, sessionID: sessionID, allocID: allocID, hostPath: filepath.Join(o.provisionRoot, allocID), fresh: true}, true, nil
+		return workspacePlan{ws: ws, sessionID: sessionID, allocID: allocID, hostPath: o.allocationPath(account, allocID), fresh: true}, true, nil
 	}
+}
+
+// allocationPath is where one allocation lives, and it is the ONE place that decides.
+//
+// A session with an account gets <root>/slot-NN/<alloc_id>: the daemon derives the same directory from
+// the same integer when it adopts, so neither side ever sends the other a path. A deployment with no
+// per-session accounts keeps the flat layout it always had.
+func (o *Orchestrator) allocationPath(account SessionAccount, allocID string) string {
+	if slotDir, err := SlotDirFor(o.provisionRoot, account); err == nil {
+		return filepath.Join(slotDir, allocID)
+	}
+	return filepath.Join(o.provisionRoot, allocID)
 }
 
 // realizeRootWorkspace puts the workspace on the machine and returns the allocation root the tools
@@ -397,22 +425,6 @@ func (o *Orchestrator) provisionFreshAllocation(ctx context.Context, ops toolbro
 	// It happens before the clone rather than after, for the reason the account is acquired before it:
 	// a tree relocated afterwards is a tree copied twice, and a tree written to the old path is a tree
 	// the daemon will never be asked about.
-	if account.Bound() && o.provisionRoot != "" {
-		slotDir, serr := SlotDirFor(o.provisionRoot, account)
-		if serr != nil {
-			return coordinator.Allocation{}, fmt.Errorf("provision %s: %w", allocID, serr)
-		}
-		// The slot directory is created HERE and with 0711, by the process that is about to write into
-		// it. The daemon's adopt leaves an existing directory's mode alone, so this is where the mode is
-		// decided — and traverse-for-others is what it must be: the RUNNER resolves an allocation path
-		// through this directory to open it, and a 0700 slot answers "permission denied" on the lstat
-		// before the session ever starts. Nobody but the account may LIST it, and everything inside is
-		// the account's own.
-		if err := os.MkdirAll(slotDir, 0o711); err != nil {
-			return coordinator.Allocation{}, fmt.Errorf("provision %s: create the slot directory: %w", allocID, err)
-		}
-		dir = filepath.Join(slotDir, allocID)
-	}
 	// Drive requested→provisioning→preparing idempotently: a retry after a failed clone re-enters from
 	// `provisioning` or `preparing`, so an already-applied transition (ErrInvalidState) is skipped —
 	// mirroring the run-transition loop in ExecuteAttempt. This is what lets a stuck-mid-provision

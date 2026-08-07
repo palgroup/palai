@@ -337,7 +337,7 @@ else
 	# THE HONEST REPORT OF AN UNWIRED DEPLOYMENT, and it is a measurement rather than a skip: the uid a
 	# command runs as is a fact this smoke can take on any stack, and naming it is what stops "no accounts
 	# configured" from reading like "not checked".
-	skip "the session's commands ran as its OWN account" "ran as $uid_name — this deployment mints none, so a session's commands run as the control plane's own uid, which docs/operations/mac-sessions.md §7 is explicit is NOT a boundary"
+	skip "the session's commands ran as its OWN account" "ran as $uid_name — this deployment mints none, so a session's commands run as the control plane's own uid, which docs/operations/palai-on-a-mac.md §7 is explicit is NOT a boundary"
 fi
 
 if [ "$WITH_ACCOUNTS" -eq 1 ]; then

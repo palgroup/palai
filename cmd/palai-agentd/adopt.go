@@ -10,10 +10,11 @@ import (
 	"github.com/palgroup/palai/packages/macagent"
 )
 
-// slotRootMode is what one slot's directory is left as: the account owns it outright and everyone else
-// may only TRAVERSE. The runner resolves an allocation path through this directory and needs nothing
-// more than that; it cannot list the slot, and everything inside is owner-only.
-const slotRootMode = 0o711
+// slotRootMode is what one slot's directory is left as: the control plane that CREATED it keeps it, the
+// slot's own group may TRAVERSE, and nobody else has anything at all. The `1` that used to sit in the
+// last position was world-traversable, which on a Mac holding two tenants means tenant B can walk into
+// tenant A's slot and reach any path it can guess; the per-slot group makes 0 expressible there.
+const slotRootMode = 0o710
 
 // SlotDirName is the directory one slot's allocations live in, under the allocation root. It is
 // derived from the integer on BOTH sides — the control plane places allocations here and the daemon
@@ -47,7 +48,7 @@ func (s *Server) adopt(ctx context.Context, slot int) macagent.Response {
 	if err != nil {
 		return responseFor(err)
 	}
-	uid, err := macagent.AccountUID(slot)
+	gid, err := macagent.SlotGID(slot)
 	if err != nil {
 		return responseFor(err)
 	}
@@ -71,9 +72,22 @@ func (s *Server) adopt(ctx context.Context, slot int) macagent.Response {
 		// So the root stays with whoever made it, traversable, and everything INSIDE it becomes the
 		// account's. The container is the runner's; the contents are the tenant's.
 		if path == dir {
+			// The root's GROUP still moves — that is what lets this slot's account traverse into it —
+			// but its OWNER does not, which is the distinction the paragraph above is about.
+			if err := os.Lchown(path, -1, gid); err != nil {
+				return err
+			}
 			return os.Chmod(path, slotRootMode)
 		}
-		if err := os.Lchown(path, uid, macagent.AccountGID); err != nil {
+		// ‼️ THE OWNER IS LEFT ALONE AND THE GROUP IS THE BOUNDARY. This tree's tools run CONTROL-PLANE
+		// side against the same host allocation, so the control plane's uid must keep read and write on
+		// the tree — an allocation owned by the session account answered "permission denied" to the file
+		// tool, with the agent reporting it in its own words on 2026-08-08.
+		//
+		// So: owner unchanged, group = THIS SLOT'S OWN group, mode 0770. Both halves work and no other
+		// tenant is in that group — which is why the group is per-slot and not the shared AccountGID
+		// every session account carries.
+		if err := os.Lchown(path, -1, gid); err != nil {
 			return err
 		}
 		// ‼️ THE MODES ARE SET HERE TOO, AND OWNERSHIP ALONE WOULD NOT HAVE BEEN A BOUNDARY. The control
@@ -85,14 +99,14 @@ func (s *Server) adopt(ctx context.Context, slot int) macagent.Response {
 		// open the allocation, and traverse is all that takes. It cannot LIST what is inside, and what
 		// is inside is owner-only, so the runner learns nothing by walking through.
 		if entry != nil && entry.IsDir() {
-			return os.Chmod(path, 0o700)
+			return os.Chmod(path, 0o770)
 		}
 		// A symlink has no mode of its own worth setting, and following it to chmod the target is the
 		// same escape Lchown above refuses to make.
 		if entry != nil && entry.Type()&fs.ModeSymlink != 0 {
 			return nil
 		}
-		return os.Chmod(path, 0o600)
+		return os.Chmod(path, 0o660)
 	}); err != nil {
 		return macagent.Err(macagent.ClassInternal, fmt.Sprintf("give %s to %s: %v", dir, name, err))
 	}

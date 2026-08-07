@@ -72,7 +72,7 @@ RELEASE=code-and-ship-0.1.0 scripts/evidence/verify
 echo "uat-code-and-ship: [4/4] the automation catalog corpus + the operator-doc corpus" >&2
 # E22 adds THREE case.yaml files (CAS-001/003/005) and edits two (CAS-002/004), so the catalog corpus is not
 # optional — the re-verify rule this repository learned the hard way. tests/docs is here because this epic's
-# ceilings are stated in docs/operations/palai-on-a-mac.md and docs/operations/mac-sessions.md, and a page
+# ceilings are stated in docs/operations/palai-on-a-mac.md and docs/operations/palai-on-a-mac.md, and a page
 # that stopped matching the code is how an operating rule quietly becomes wrong.
 go test -count=1 ./tests/uat/automation/... ./tests/docs/...
 # The TENANCY corpus is the other half of the re-verify rule, and it is NOT run here: all five of its tests

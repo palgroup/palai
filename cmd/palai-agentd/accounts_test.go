@@ -83,20 +83,26 @@ func newTestAccounts(t *testing.T, rec *recordingRun) *SysadminctlAccounts {
 //
 // The second half is the one with history: `sysadminctl -home` assigns a home directory and does not
 // create one — it says so in its own output — and createhomedir exits 0 on paths it did not populate.
-// mac-sessions.sh shipped a defect reading past exactly this, so the check is here and so is its test.
+// an earlier shell creator shipped a defect reading past exactly this, so the check is here and so is its test.
 //
 // ‼️ AND THE SEQUENCE NOW OPENS WITH THE GROUP, WHICH IS ORDER AND NOT DECORATION. `-GID` naming a group
 // that does not exist produces an account whose primary group resolves to nothing — a user that cannot
 // open its own home, reported as a successful create — so the group has to be made first and the pin is
-// what keeps it there. The gid in the expectation is 700 and NOT 20: `staff` is the operator's own login
-// group and a macOS home is drwxr-x--- owned by <operator>:staff, so an account created there read the
-// whole home. This expectation carried `-GID 20` until 2026-08-06 and asserting it was asserting the bug.
+// what keeps it there.
+//
+// THE GID IS 807 AND IT HAS BEEN WRONG TWICE, in opposite directions. It carried `-GID 20` until
+// 2026-08-06, which is `staff`: the operator's own login group, on a machine whose home is drwxr-x---
+// owned by <operator>:staff — so the account read the whole home and this expectation asserted the bug.
+// It then carried a fleet-wide 700, which fixed that and left every session reachable by every other
+// session the moment a workspace was made group-accessible to its own account. 807 is slot 7's OWN
+// group, and a number that moves WITH the slot is the only shape under which "the account reaches its
+// workspace" and "no other tenant does" are both true.
 func TestCreateRunsArgvAndNeverACommandLine(t *testing.T) {
 	rec := &recordingRun{answers: map[string]string{
-		"dscl . -create /Groups/palai-sessions":                                                                                        "",
-		"dscl . -create /Groups/palai-sessions PrimaryGroupID 700":                                                                     "",
-		"dscl . -create /Groups/palai-sessions RealName Palai session accounts":                                                        "",
-		"sysadminctl -addUser palai-s07 -fullName Palai session s07 -UID 707 -GID 700 -shell /bin/zsh -home /Users/palai-s07":          "",
+		"dscl . -create /Groups/palai-s07-grp":                                                                                         "",
+		"dscl . -create /Groups/palai-s07-grp PrimaryGroupID 807":                                                                      "",
+		"dscl . -create /Groups/palai-s07-grp RealName Palai session slot 07":                                                          "",
+		"sysadminctl -addUser palai-s07 -fullName Palai session s07 -UID 707 -GID 807 -shell /bin/zsh -home /Users/palai-s07":          "",
 		"dscl . -create /Users/palai-s07 " + markerAttr + " " + markerMagic + ":1:" + testHostUUID + ":palai-s07:2026-08-05T12:00:00Z": "",
 		"createhomedir -c -u palai-s07":                                                                                                "",
 	}}
@@ -116,13 +122,13 @@ func TestCreateRunsArgvAndNeverACommandLine(t *testing.T) {
 	want := []string{
 		// The group, probed then made. The probe answers ErrNotExist here (nothing scripts it), which is
 		// what dscl does for a record that is not there, so this run takes the create path.
-		"dscl . -read /Groups/palai-sessions PrimaryGroupID",
-		"dscl . -search /Groups PrimaryGroupID 700",
-		"dscl . -create /Groups/palai-sessions",
-		"dscl . -create /Groups/palai-sessions PrimaryGroupID 700",
-		"dscl . -create /Groups/palai-sessions RealName Palai session accounts",
+		"dscl . -read /Groups/palai-s07-grp PrimaryGroupID",
+		"dscl . -search /Groups PrimaryGroupID 807",
+		"dscl . -create /Groups/palai-s07-grp",
+		"dscl . -create /Groups/palai-s07-grp PrimaryGroupID 807",
+		"dscl . -create /Groups/palai-s07-grp RealName Palai session slot 07",
 		// Only then the account, and it names the group that now exists.
-		"sysadminctl -addUser palai-s07 -fullName Palai session s07 -UID 707 -GID 700 -shell /bin/zsh -home /Users/palai-s07",
+		"sysadminctl -addUser palai-s07 -fullName Palai session s07 -UID 707 -GID 807 -shell /bin/zsh -home /Users/palai-s07",
 		"dscl . -create /Users/palai-s07 " + markerAttr + " " + markerMagic + ":1:" + testHostUUID + ":palai-s07:2026-08-05T12:00:00Z",
 		"createhomedir -c -u palai-s07",
 	}
@@ -633,5 +639,83 @@ func TestNoBucketIsRemovedForAUIDOutsideTheSessionRange(t *testing.T) {
 	}
 	if _, err := os.Stat(bucket); err != nil {
 		t.Fatalf("a session uid that owns nothing still deleted %s: %v", bucket, err)
+	}
+}
+
+// TestTheSlotGroupCarriesBothPrincipals — A GROUP WITH ONE MEMBER IS A ONE-WAY DOOR.
+//
+// The control plane clones the repository and runs the file tools as itself, so it reaches that tree as
+// its OWNER and the group is what lets the session in. The session's own commands write files too, owned
+// by the session account in the session's group — and a control plane outside that group cannot read
+// back the work the tenant just did, which is the diff a human approves. So both principals are members,
+// and this test drives the create path with an allocation root it OWNS rather than one it inherits: the
+// production skip when allocationRoot is empty is exactly the shape that would make this pass by having
+// nothing to check.
+func TestTheSlotGroupCarriesBothPrincipals(t *testing.T) {
+	rec := &recordingRun{answers: map[string]string{
+		"dscl . -create /Groups/palai-s07-grp":                                "",
+		"dscl . -create /Groups/palai-s07-grp PrimaryGroupID 807":             "",
+		"dscl . -create /Groups/palai-s07-grp RealName Palai session slot 07": "",
+		"dseditgroup -o edit -a operator -t user palai-s07-grp":               "",
+	}}
+	a := newTestAccounts(t, rec)
+	a.allocationRoot = t.TempDir()
+	a.ownerOf = func(string) (int, error) { return 501, nil }
+	a.lookupUser = func(uid int) (string, error) {
+		if uid != 501 {
+			t.Errorf("lookupUser(%d), want the uid that owns the allocation root (501)", uid)
+		}
+		return "operator", nil
+	}
+
+	if err := a.ensureSlotGroup(context.Background(), 7); err != nil {
+		t.Fatalf("ensureSlotGroup: %v", err)
+	}
+
+	const want = "dseditgroup -o edit -a operator -t user palai-s07-grp"
+	found := false
+	for _, call := range rec.calls {
+		if strings.Join(call, " ") == want {
+			found = true
+		}
+	}
+	if !found {
+		var got []string
+		for _, call := range rec.calls {
+			got = append(got, "  "+strings.Join(call, " "))
+		}
+		t.Errorf("the control plane was never added to slot 7's group — it would own what it writes and be "+
+			"locked out of everything the SESSION writes, so the diff a human approves would be unreadable.\n"+
+			"want\n  %s\ngot\n%s", want, strings.Join(got, "\n"))
+	}
+}
+
+// TestARootOwnedAllocationRootIsRefusedRatherThanJoined — root in a tenant's group is a lie that reads
+// as success. Reaching this branch means the allocation root was made by the installer instead of by the
+// control plane, and root already reaches every path on the machine: adding it would change nothing and
+// would leave the ACTUAL control-plane user outside the group, discovering it one session later.
+func TestARootOwnedAllocationRootIsRefusedRatherThanJoined(t *testing.T) {
+	rec := &recordingRun{answers: map[string]string{
+		"dscl . -create /Groups/palai-s07-grp":                                "",
+		"dscl . -create /Groups/palai-s07-grp PrimaryGroupID 807":             "",
+		"dscl . -create /Groups/palai-s07-grp RealName Palai session slot 07": "",
+		"dseditgroup -o edit -a operator -t user palai-s07-grp":               "",
+	}}
+	a := newTestAccounts(t, rec)
+	a.allocationRoot = t.TempDir()
+	a.ownerOf = func(string) (int, error) { return 0, nil }
+	a.lookupUser = func(int) (string, error) { return "root", nil }
+
+	err := a.ensureSlotGroup(context.Background(), 7)
+	if err == nil {
+		t.Fatal("a root-owned allocation root was accepted; the control-plane user would never join the group")
+	}
+	if !strings.Contains(err.Error(), "owned by root") {
+		t.Errorf("the refusal was %q, want one naming root ownership", err)
+	}
+	for _, call := range rec.calls {
+		if len(call) > 0 && call[0] == "dseditgroup" {
+			t.Errorf("root was added to a tenant's group anyway: %s", strings.Join(call, " "))
+		}
 	}
 }

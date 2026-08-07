@@ -536,7 +536,7 @@ func TestAMachineHeldByAnotherCustomerParksTheRunInsteadOfSharingIt(t *testing.T
 		t.Fatalf("ExecuteAttempt onto a machine another customer holds returned %v, want nil — a park that returns an error is a FAILED attempt, and five of those dead-letter a run that only has to wait", err)
 	}
 	if got := f.runState(t); got != "waiting" {
-		t.Fatalf("run state = %q on a Mac another customer is holding, want waiting — two customers were on one machine, which docs/operations/mac-sessions.md §5 says the product does not permit and 000008 exists to enforce", got)
+		t.Fatalf("run state = %q on a Mac another customer is holding, want waiting — two customers were on one machine, which docs/operations/palai-on-a-mac.md §2 says the product does not permit and 000008 exists to enforce", got)
 	}
 	if len(ch.sent) != 0 {
 		t.Fatalf("the parked attempt sent %d frame(s) to the engine (%v), want 0 — the run executed on another customer's machine", len(ch.sent), ch.sent)

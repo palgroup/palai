@@ -143,7 +143,7 @@ Not code. An operating rule, and it is the only thing between two customers on o
 
 Source: `docs/research/macos-isolation-without-accounts.md` §6 (measured 2026-07-27/28). The
 per-session half is accident-prevention, **not a security boundary** — any process under the same uid
-can point `--set` at another session's device set (research T22). `docs/operations/mac-sessions.md`
+can point `--set` at another session's device set (research T22). `docs/operations/palai-on-a-mac.md`
 is the operator page for the density half of it, and `docs/operations/known-gaps-1.0.md` carries the
 same sentence as row `MAC-P6`.
 
@@ -481,7 +481,7 @@ palai up --native
 ```
 
 `palai up` exports the runner count for you when only the dispatch count is set — they answer the same
-question, and letting them disagree silently was a real defect. `scripts/ops/mac-sessions.sh plan
+question, and letting them disagree silently was a real defect. `the fleet's capacity declaration
 --count N` prints this block with N filled in.
 
 **The measurement, on this machine** (M2 Pro, 12 core, 16 GiB). Two sessions submitted at the same
@@ -542,7 +542,7 @@ regression this fences, so it goes red. It skips only when there is no stack at 
   was needed to make sessions run in parallel.
 
 **What caps N is the machine, not the stack.** On this 16 GiB box the ceiling is low and it is RAM:
-`mac-sessions.sh plan` budgets 8 GiB per *Xcode-class* session, giving a ceiling of 1. Light sessions
+the capacity declaration budgets 8 GiB per *Xcode-class* session, giving a ceiling of 1. Light sessions
 (one model round trip, no simulator) are far cheaper — 2 ran comfortably. A later repeat of the same
 2-session run, taken while the host was thrashing at load 250 with 157 MB free, **failed**: Postgres
 dropped into recovery mode and engines missed their startup handshake. The runs were still dispatched

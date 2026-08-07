@@ -22,7 +22,7 @@ type sessionWorker struct {
 	// worker that needed a flag would be a worker whose behaviour a caller could steer by asking for a
 	// different one, and this daemon has no way to tell a legitimate flag from a hostile one.
 	Path string
-	// UID and GID are the account's, from macagent.AccountUID and macagent.AccountGID.
+	// UID and GID are the account's, from macagent.AccountUID and macagent.SlotGID.
 	UID, GID int
 	// Dir is the account's home. A worker started in the daemon's own working directory would create
 	// its scratch files wherever launchd left root, which is both a residue and a confusion about who
@@ -121,6 +121,11 @@ func (a *SysadminctlAccounts) Spawn(ctx context.Context, slot int) (string, int,
 			"the record for %s carries uid %d and this daemon allocates %d; refusing to start a process as either", name, rec.uid, uid)
 	}
 
+	gid, err := macagent.SlotGID(slot)
+	if err != nil {
+		return "", 0, err
+	}
+
 	if err := a.requireSafeWorker(); err != nil {
 		return "", 0, err
 	}
@@ -128,7 +133,7 @@ func (a *SysadminctlAccounts) Spawn(ctx context.Context, slot int) (string, int,
 	pid, err := a.spawn(ctx, sessionWorker{
 		Path: a.workerPath,
 		UID:  uid,
-		GID:  macagent.AccountGID,
+		GID:  gid,
 		Dir:  home,
 		Env:  workerEnv(home),
 	})
@@ -143,9 +148,9 @@ func (a *SysadminctlAccounts) Spawn(ctx context.Context, slot int) (string, int,
 //
 // ‼️ THE WRITABILITY CHECK IS ABOUT ONE SLOT ATTACKING ANOTHER, which is easy to miss because the
 // process is started AS the tenant and running the tenant's own code as the tenant would cost nothing.
-// The accounts share a group — staff, macagent.AccountGID — so a worker binary that were group- or
-// world-writable would let slot 07 replace the program slot 08's session is about to run. Every slot
-// on the machine is one principal's, and a file all of them can write is not one of them.
+// Each account now has its own group, so no group bit joins two slots — but a worker binary that were
+// group- or WORLD-writable would still let slot 07 replace the program slot 08's session is about to
+// run. Every slot on the machine is one principal's, and a file all of them can write is not one of them.
 //
 // It is checked at SPAWN rather than at startup on purpose: an upgrade replaces this file while the
 // daemon is running, and a posture read once at boot is a posture that describes a file that is gone.

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -31,12 +32,12 @@ type Accounts interface {
 	Spawn(ctx context.Context, slot int) (name string, pid int, err error)
 }
 
-// markerAttr, markerMagic and markerVersion mirror mac-sessions.sh exactly, and they have to.
+// markerAttr, markerMagic and markerVersion are this daemon's own, and they have to.
 //
 // THE MARKER IS THE AUTHORITY, NOT THE NAME. Only root can write a dsAttrTypeNative attribute, so a
 // record carrying this marker is one root created here — where an account merely CALLED palai-s07 could
 // be anybody's. Sharing the format with the shell tooling is what lets an operator's
-// `mac-sessions.sh down --mode accounts --apply` clean up after this daemon, and lets this daemon
+// `palai agentd` reconciliation clean up after this daemon, and lets this daemon
 // delete what the operator's script created. Two namespaces that cannot see each other's accounts would
 // leave orphans that neither side is willing to touch.
 const (
@@ -111,20 +112,57 @@ type SysadminctlAccounts struct {
 	// goos is runtime.GOOS in production. It is a field because the refusal on a non-Mac is behaviour
 	// worth testing, and CI runs on Linux.
 	goos string
+	// allocationRoot is the directory this machine opens session workspaces in, and it is here for ONE
+	// purpose: its owner is the control plane, and that is the only honest way this daemon has to learn
+	// who the control plane is. Nothing arrives on the wire that could say so — the socket carries a
+	// slot and nothing else — and a name in a flag would be a name an operator could get wrong. The
+	// directory the control plane made is the control plane's own statement about its identity.
+	allocationRoot string
+	// ownerOf answers which uid owns a path, and lookupUser turns a uid into a name. Both are fields so
+	// that a test can pin what the group ends up containing without a real account existing.
+	ownerOf    func(path string) (int, error)
+	lookupUser func(uid int) (string, error)
 }
 
 // NewSysadminctlAccounts wires the production implementation.
-func NewSysadminctlAccounts() *SysadminctlAccounts {
+func NewSysadminctlAccounts(allocationRoot string) *SysadminctlAccounts {
 	return &SysadminctlAccounts{
-		run:          runArgv,
-		spawn:        startWorker,
-		workerPath:   macagent.InstalledWorkerPath,
-		foldersRoot:  darwinFoldersRoot,
-		messagesRoot: mdsMessagesRoot,
-		hostUUID:     hostUUID,
-		now:          time.Now,
-		goos:         runtime.GOOS,
+		allocationRoot: allocationRoot,
+		run:            runArgv,
+		spawn:          startWorker,
+		workerPath:     macagent.InstalledWorkerPath,
+		foldersRoot:    darwinFoldersRoot,
+		messagesRoot:   mdsMessagesRoot,
+		hostUUID:       hostUUID,
+		now:            time.Now,
+		goos:           runtime.GOOS,
+		ownerOf:        ownerOf,
+		lookupUser:     lookupUserName,
 	}
+}
+
+// ownerOf reads the uid that owns a path.
+func ownerOf(path string) (int, error) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return 0, err
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, fmt.Errorf("%s carries no unix ownership", path)
+	}
+	return int(st.Uid), nil
+}
+
+// lookupUserName turns a uid into the name directory services knows it by, which is what dseditgroup
+// takes. The uid is what a directory's ownership carries; the name is what group membership is written
+// in, and the two are only the same fact on a machine that agrees with itself.
+func lookupUserName(uid int) (string, error) {
+	u, err := user.LookupId(strconv.Itoa(uid))
+	if err != nil {
+		return "", err
+	}
+	return u.Username, nil
 }
 
 func runArgv(ctx context.Context, name string, args ...string) (string, error) {
@@ -135,7 +173,7 @@ func runArgv(ctx context.Context, name string, args ...string) (string, error) {
 	return string(out), nil
 }
 
-// hostUUID reads this Mac's IOPlatformUUID, the same identity mac-sessions.sh mints markers against.
+// hostUUID reads this Mac's IOPlatformUUID, the same identity the marker mints markers against.
 func hostUUID(ctx context.Context) (string, error) {
 	out, err := runArgv(ctx, "ioreg", "-rd1", "-c", "IOPlatformExpertDevice")
 	if err != nil {
@@ -160,45 +198,59 @@ func (a *SysadminctlAccounts) requireMac() error {
 	return nil
 }
 
-// ensureGroup makes the group every session account belongs to, once, idempotently.
+// ensureSlotGroup makes SLOT N's OWN group, idempotently, and puts nothing in it but that slot.
 //
-// ‼️ THIS GROUP IS THE BOUNDARY, NOT BOOKKEEPING. A macOS home directory is `drwxr-x---` owned by
-// `<operator>:staff`, and a local account created without `-GID` lands in `staff` — so a session
-// account in the default group reads the operator's entire home by the group bit, every checkout under
-// it included. Putting sessions in a group nothing else joins is what makes the operator's home
-// unreachable by owner, group AND other. See macagent.AccountGroupName.
+// ‼️ THIS GROUP IS THE BOUNDARY, NOT BOOKKEEPING, AND THERE IS ONE PER SLOT. A macOS home directory is
+// `drwxr-x---` owned by `<operator>:staff` and a local account created without `-GID` lands in `staff`,
+// so a session account in the default group reads the operator's entire home by the group bit. A single
+// fleet-wide group fixed that and created the mirror image: the workspace a session must reach through
+// its group becomes reachable by every OTHER session's account too. Two customers on one Mac is a case
+// this fleet serves, so the group is exactly as narrow as the thing it protects. See
+// macagent.SlotGroupName.
 //
 // IT REFUSES RATHER THAN ADAPTS, on both collisions:
 //
-//   - the NAME exists with a different gid — that group is somebody else's, and creating accounts in
+//   - the NAME exists with a different gid — that group is somebody else's, and creating an account in
 //     it would hand them whatever it can reach;
 //   - the GID is held under a different name — same hazard from the other direction, and `sysadminctl
 //     -GID` names the number, not the record.
 //
 // Either way the honest answer is to stop: an account created into the wrong group is a boundary that
 // reports success and does not exist.
-func (a *SysadminctlAccounts) ensureGroup(ctx context.Context) error {
-	const path = "/Groups/" + macagent.AccountGroupName
+//
+// AN EXISTING GROUP OF OUR OWN IS NOT A COLLISION. Slots are reused — an account is destroyed when a
+// session goes idle and slot 07 is minted again for the next one — so finding palai-s07-grp at gid 807
+// is the ordinary second create, and refusing it would make a machine usable exactly once per slot.
+func (a *SysadminctlAccounts) ensureSlotGroup(ctx context.Context, slot int) error {
+	group, err := macagent.SlotGroupName(slot)
+	if err != nil {
+		return err
+	}
+	gid, err := macagent.SlotGID(slot)
+	if err != nil {
+		return err
+	}
+	path := "/Groups/" + group
 
 	if out, err := a.run(ctx, "dscl", ".", "-read", path, "PrimaryGroupID"); err == nil {
 		got := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(out), "PrimaryGroupID:"))
-		if got == strconv.Itoa(macagent.AccountGID) {
+		if got == strconv.Itoa(gid) {
 			return nil
 		}
 		return macagent.Errorf(macagent.ClassInternal,
 			"group %s already exists with gid %s, not %d: it is not the one this daemon owns, and creating "+
-				"session accounts in it would give them whatever that group can reach",
-			macagent.AccountGroupName, got, macagent.AccountGID)
+				"a session account in it would give that session whatever that group can reach",
+			group, got, gid)
 	}
 
 	// The gid may be held under another name even when the name is free. `-search` answers the records
 	// that hold it; anything at all here is a collision.
-	if out, err := a.run(ctx, "dscl", ".", "-search", "/Groups", "PrimaryGroupID", strconv.Itoa(macagent.AccountGID)); err == nil {
+	if out, err := a.run(ctx, "dscl", ".", "-search", "/Groups", "PrimaryGroupID", strconv.Itoa(gid)); err == nil {
 		if holder := strings.TrimSpace(out); holder != "" {
 			return macagent.Errorf(macagent.ClassInternal,
-				"gid %d is already held on this machine (%s), so it cannot be %s: session accounts would share a "+
+				"gid %d is already held on this machine (%s), so it cannot be %s: this slot would share a "+
 					"group with whatever holds it",
-				macagent.AccountGID, strings.Fields(holder)[0], macagent.AccountGroupName)
+				gid, strings.Fields(holder)[0], group)
 		}
 	}
 
@@ -209,13 +261,77 @@ func (a *SysadminctlAccounts) ensureGroup(ctx context.Context) error {
 	// the rule stops being checkable. The attribute is not needed, so it is not written.
 	for _, args := range [][]string{
 		{".", "-create", path},
-		{".", "-create", path, "PrimaryGroupID", strconv.Itoa(macagent.AccountGID)},
-		{".", "-create", path, "RealName", "Palai session accounts"},
+		{".", "-create", path, "PrimaryGroupID", strconv.Itoa(gid)},
+		{".", "-create", path, "RealName", fmt.Sprintf("Palai session slot %02d", slot)},
 	} {
 		if out, err := a.run(ctx, "dscl", args...); err != nil {
 			return macagent.Errorf(macagent.ClassInternal,
-				"creating group %s failed: %v: %s", macagent.AccountGroupName, err, strings.TrimSpace(out))
+				"creating group %s failed: %v: %s", group, err, strings.TrimSpace(out))
 		}
+	}
+	return a.joinControlPlane(ctx, group)
+}
+
+// joinControlPlane puts the control plane's own user in the slot's group.
+//
+// ‼️ THE GROUP HAS TO CARRY BOTH PRINCIPALS OR IT ONLY WORKS IN ONE DIRECTION, and the direction it
+// would work in is the one that matters least. The control plane clones the repository and runs the file
+// tools, so it owns what it writes and reaches it as the owner — the group is what lets the SESSION read
+// it. But the session's own commands write files too, and those are owned by the session account with
+// the session's group; a control plane outside that group would then be unable to read back the work the
+// tenant just did, which is the diff a human approves. Both write, so both are members.
+//
+// IT IS THE OWNER OF THE ALLOCATION ROOT, NOT A CONFIGURED NAME. See the field comment on
+// allocationRoot: a directory the control plane created is the control plane's own statement about who
+// it is, and it is the only one this daemon can read without being told.
+//
+// A DAEMON WITH NO ALLOCATION ROOT SKIPS THIS RATHER THAN FAILING. Such a daemon cannot adopt anything
+// either — adopt refuses outright — so there is no tree for the two principals to share and no claim
+// being quietly weakened.
+func (a *SysadminctlAccounts) joinControlPlane(ctx context.Context, group string) error {
+	if a.allocationRoot == "" {
+		return nil
+	}
+	uid, err := a.ownerOf(a.allocationRoot)
+	if err != nil {
+		return macagent.Errorf(macagent.ClassInternal,
+			"reading who owns %s failed, so this daemon cannot tell which user is the control plane: %v", a.allocationRoot, err)
+	}
+	// ‼️ ROOT IS NOT PUT IN A TENANT'S GROUP, and reaching this branch means the allocation root is
+	// root-owned — which is a real misinstall rather than a state to paper over. root already reaches
+	// every path on the machine, so adding it would be a no-op that hides the misinstall; refusing says
+	// the control plane is not the process that made this directory.
+	if uid == 0 {
+		return macagent.Errorf(macagent.ClassInternal,
+			"%s is owned by root, so the control plane cannot be derived from it; it must be created by the "+
+				"user the control plane runs as", a.allocationRoot)
+	}
+	name, err := a.lookupUser(uid)
+	if err != nil {
+		return macagent.Errorf(macagent.ClassInternal, "uid %d owns %s but has no name in directory services: %v", uid, a.allocationRoot, err)
+	}
+	if out, err := a.run(ctx, "dseditgroup", "-o", "edit", "-a", name, "-t", "user", group); err != nil {
+		return macagent.Errorf(macagent.ClassInternal,
+			"adding %s to %s failed, so the control plane could not read back what the session writes: %v: %s",
+			name, group, err, strings.TrimSpace(out))
+	}
+	return nil
+}
+
+// removeSlotGroup takes the group away with the account, so a destroyed session leaves no record that a
+// later, unrelated account could be created into. It is best-effort in exactly one direction: a group
+// that is already gone is the state the caller asked for.
+func (a *SysadminctlAccounts) removeSlotGroup(ctx context.Context, slot int) error {
+	group, err := macagent.SlotGroupName(slot)
+	if err != nil {
+		return err
+	}
+	path := "/Groups/" + group
+	if _, err := a.run(ctx, "dscl", ".", "-read", path, "PrimaryGroupID"); err != nil {
+		return nil
+	}
+	if out, err := a.run(ctx, "dscl", ".", "-delete", path); err != nil {
+		return macagent.Errorf(macagent.ClassInternal, "deleting group %s failed: %v: %s", group, err, strings.TrimSpace(out))
 	}
 	return nil
 }
@@ -250,8 +366,13 @@ func (a *SysadminctlAccounts) Create(ctx context.Context, slot int) (string, str
 
 	// THE GROUP IS MADE BEFORE THE ACCOUNT, because `-GID` on a group that does not exist produces a
 	// user whose primary group resolves to nothing — a login that cannot open its own home, reported as
-	// a successful create. See ensureGroup for why the group is a boundary rather than bookkeeping.
-	if err := a.ensureGroup(ctx); err != nil {
+	// a successful create. See ensureSlotGroup for why the group is a boundary rather than bookkeeping,
+	// and why there is one of them per slot.
+	if err := a.ensureSlotGroup(ctx, slot); err != nil {
+		return "", "", err
+	}
+	gid, err := macagent.SlotGID(slot)
+	if err != nil {
 		return "", "", err
 	}
 
@@ -263,7 +384,7 @@ func (a *SysadminctlAccounts) Create(ctx context.Context, slot int) (string, str
 		"-addUser", name,
 		"-fullName", fmt.Sprintf("Palai session s%02d", slot),
 		"-UID", strconv.Itoa(uid),
-		"-GID", strconv.Itoa(macagent.AccountGID),
+		"-GID", strconv.Itoa(gid),
 		"-shell", "/bin/zsh",
 		"-home", home,
 	); err != nil {
@@ -276,7 +397,7 @@ func (a *SysadminctlAccounts) Create(ctx context.Context, slot int) (string, str
 	}
 
 	// -home ASSIGNS a home directory; it does not CREATE one. sysadminctl says so in its own output
-	// ("Home directory is assigned (not created!)") and mac-sessions.sh shipped a defect by reading
+	// ("Home directory is assigned (not created!)") and an earlier shell creator shipped a defect by reading
 	// straight past it. createhomedir is the supported way to populate one from the user template;
 	// -c means this machine, -u names the account.
 	if out, err := a.run(ctx, "createhomedir", "-c", "-u", name); err != nil {
@@ -331,7 +452,7 @@ func (a *SysadminctlAccounts) Delete(ctx context.Context, slot int) (string, str
 	if out, err := a.run(ctx, "sysadminctl", "-deleteUser", name, "-secure"); err != nil {
 		return "", "", macagent.Errorf(macagent.ClassInternal, "deleting %s failed: %v: %s", name, err, strings.TrimSpace(out))
 	}
-	// Verified rather than trusted, the same way mac-sessions.sh checks both halves: the record can go
+	// Verified rather than trusted, the same way a reconciler checks both halves: the record can go
 	// while the home stays, and a home left behind is the residue this whole phase exists to remove.
 	if after, err := a.record(ctx, name); err == nil && after.exists {
 		return "", "", macagent.Errorf(macagent.ClassInternal, "sysadminctl reported success but the record for %s still exists", name)
@@ -349,6 +470,14 @@ func (a *SysadminctlAccounts) Delete(ctx context.Context, slot int) (string, str
 	if err := removeMessagesDir(a.messagesRoot, rec.uid); err != nil {
 		return "", "", macagent.Errorf(macagent.ClassInternal,
 			"%s is gone but its metadata-server message directory is not: %v", name, err)
+	}
+	// AND THE GROUP GOES WITH THE ACCOUNT, because the group IS this slot's boundary and a boundary that
+	// outlives what it protected is worse than none: the next thing created into palai-s07-grp inherits
+	// group access to whatever the last session left behind. Slots are reused — an account is destroyed
+	// the moment a session goes idle and minted again for the next one — so this is the ordinary path,
+	// not the teardown path.
+	if err := a.removeSlotGroup(ctx, slot); err != nil {
+		return "", "", err
 	}
 	return name, home, nil
 }

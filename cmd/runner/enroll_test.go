@@ -249,6 +249,10 @@ func (f *enrollFixture) seams() enrolSeams {
 		// The account daemon needs root, which this test does not have and should not want. Counting the
 		// call is the assertion that matters: enrolment must ASK for isolation on a Mac, and a fixture
 		// that silently answered would let the step be removed without a red.
+		// A prober pointed at a socket that cannot exist: the fixture measures ITS OWN machine, not the
+		// developer's. Without this the test dialled /var/run/palai-agentd.sock and its duration became a
+		// property of whatever daemon happened to be installed — 1s to 34s across five runs.
+		Prober: macagent.NewProber(filepath.Join(f.home, "no-such-agentd.sock")),
 		InstallAccounts: func(context.Context) (macagent.Health, error) {
 			f.accountsInstalled++
 			return macagent.Health{Version: "test"}, nil

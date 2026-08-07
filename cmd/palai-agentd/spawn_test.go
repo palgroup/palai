@@ -114,9 +114,9 @@ func TestASpawnedWorkerRunsAsTheSlotsAccount(t *testing.T) {
 		t.Errorf("the worker was started as uid %d, want %d (macagent.AccountUID(%d)). A worker at the wrong "+
 			"uid is the defect this phase exists to remove, not a smaller boundary.", w.UID, wantUID, slot)
 	}
-	if w.GID != macagent.AccountGID {
+	if w.GID != macagent.GIDBase+7 {
 		t.Errorf("the worker was started with gid %d, want %d — a gid the account was not created with is a "+
-			"process that cannot open its own home directory", w.GID, macagent.AccountGID)
+			"process that cannot open its own home directory", w.GID, macagent.GIDBase+7)
 	}
 	wantName, _ := macagent.AccountName(slot)
 	if name != wantName {

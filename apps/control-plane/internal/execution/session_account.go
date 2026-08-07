@@ -23,7 +23,7 @@ import (
 //
 // WHAT THIS IS NOT. It is not a boundary between CUSTOMERS. sudo and any local-root escalation defeat a
 // uid — three such were patched for macOS in 2026 alone — so this packs ONE customer's sessions densely
-// onto one machine and nothing more. docs/operations/mac-sessions.md says so at the top and this file
+// onto one machine and nothing more. docs/operations/palai-on-a-mac.md says so at the top and this file
 // does not quietly claim otherwise.
 
 // SessionAccounts creates and destroys the account an allocation's tools run under.
@@ -113,7 +113,7 @@ func HandTreeTo(root string, account SessionAccount) error {
 	})
 }
 
-// maxSessionSlots is the index range scripts/ops/mac-sessions.sh allocates and the privileged wrapper
+// maxSessionSlots is the index range palai-agentd allocates and the privileged wrapper
 // accepts: 01..99, two digits, enforced identically on both sides of the sudoers entry.
 const maxSessionSlots = 99
 
@@ -127,7 +127,7 @@ const maxSessionSlots = 99
 // ‼️ THE MAP IS IN PROCESS, AND THAT IS A STATED LIMIT RATHER THAN AN OVERSIGHT. A control plane that
 // restarts forgets which slots it held, so accounts created before the restart are not released by it.
 // This is the same shape as BGT-P4 — "the machine a task is on and the machine the control plane is on
-// are the same sentence" — and it has the same operator-level reconciliation: `mac-sessions.sh down
+// are the same sentence" — and it has the same operator-level reconciliation: `palai agentd reconciliation
 // --mode accounts --apply` removes every account this tooling created and recorded, and refuses every
 // account it did not. Making it survive a restart means a durable slot table, which is a schema change
 // and belongs with the decision about whether slots are per-machine or per-fleet. Writing that down is
@@ -214,7 +214,11 @@ func (a *SlotAccounts) accountFor(slot int) (SessionAccount, error) {
 	if err != nil {
 		return SessionAccount{}, fmt.Errorf("session account: slot %d has no name: %w", slot, err)
 	}
-	return SessionAccount{Name: name, UID: uid, GID: macagent.AccountGID}, nil
+	gid, err := macagent.SlotGID(slot)
+	if err != nil {
+		return SessionAccount{}, fmt.Errorf("session account: slot %d has no gid: %w", slot, err)
+	}
+	return SessionAccount{Name: name, UID: uid, GID: gid}, nil
 }
 
 // Lookup answers what this process already holds for a session. See the interface comment for why it

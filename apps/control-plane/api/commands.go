@@ -313,7 +313,7 @@ func (h *sessionHandler) command(w http.ResponseWriter, r *http.Request) {
 	//
 	// So it happens here, after AcceptCommand has committed. Best effort by contract: the session IS closed,
 	// and refusing the caller because a uid could not be removed would report a failure for something that
-	// succeeded. The slot stays held until an operator reconciles (`mac-sessions.sh down --mode accounts`),
+	// succeeded. The slot stays held until an operator reconciles (`palai agentd reconciliation --mode accounts`),
 	// which is the same trade Release itself makes — losing a slot is cheaper than handing a live account's
 	// index to the next session.
 	if req.Kind == "close_session" && h.accounts != nil {

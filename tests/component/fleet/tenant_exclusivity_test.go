@@ -8,7 +8,7 @@
 // reads as "undeclared, admits everything" — so an unlimited number of DIFFERENT customers could hold one
 // Mac simultaneously, and every layer would have reported success.
 //
-// ‼️ THE PLATFORM ALREADY SAID THEY MAY NOT. docs/operations/mac-sessions.md §5: "Different customers can
+// ‼️ THE PLATFORM ALREADY SAID THEY MAY NOT. docs/operations/palai-on-a-mac.md §2: "Different customers can
 // share a Mac — **no**", because `sudo` and any local-root escalation defeats a uid boundary and three
 // such escalations were patched in 2026 alone. That row was a claim about what the product permits and
 // nothing enforced it — the shape this tree keeps finding, where a declaration is read as a happening.

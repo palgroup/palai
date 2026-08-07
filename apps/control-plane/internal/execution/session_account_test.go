@@ -154,9 +154,16 @@ func TestAnAcquiredAccountCarriesTheUidTheDaemonWouldHaveCreated(t *testing.T) {
 		t.Errorf("UID = %d, want %d — a uid that disagrees with the account the daemon created is a "+
 			"privilege drop into a user that does not exist", account.UID, want)
 	}
-	if account.GID != macagent.AccountGID {
-		t.Errorf("GID = %d, want %d, the group sysadminctl -addUser -GID puts the account in",
-			account.GID, macagent.AccountGID)
+	// AND THE GID IS SLOT 1'S OWN, spelled through the same function for the same reason. A gid that is
+	// merely "in the session range" would be satisfied by ANOTHER slot's group, which is exactly the
+	// cross-tenant grant the per-slot group exists to make inexpressible.
+	wantGID, err := macagent.SlotGID(1)
+	if err != nil {
+		t.Fatalf("SlotGID(1): %v", err)
+	}
+	if account.GID != wantGID {
+		t.Errorf("GID = %d, want %d — slot 1's own group, the one sysadminctl -addUser -GID puts the account in",
+			account.GID, wantGID)
 	}
 	if !account.Bound() {
 		t.Error("Bound() is false for an account that was just created")
@@ -258,7 +265,7 @@ func TestHandingOverATreeFailsClosedWhenTheUidIsUnreachable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AccountUID(7): %v", err)
 	}
-	account := SessionAccount{Name: "palai-s07", UID: uid, GID: macagent.AccountGID}
+	account := SessionAccount{Name: "palai-s07", UID: uid, GID: macagent.GIDBase + 7}
 
 	err = HandTreeTo(root, account)
 

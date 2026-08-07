@@ -33,7 +33,7 @@ func TestTheCredentialACommandIsSpawnedWithCarriesTheSessionUid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AccountUID(7): %v", err)
 	}
-	attr, err := procAttrFor(&toolbroker.RunAs{UID: uid, GID: macagent.AccountGID}, 0)
+	attr, err := procAttrFor(&toolbroker.RunAs{UID: uid, GID: macagent.GIDBase + 7}, 0)
 	if err != nil {
 		t.Fatalf("procAttrFor at euid 0: %v", err)
 	}
@@ -45,9 +45,9 @@ func TestTheCredentialACommandIsSpawnedWithCarriesTheSessionUid(t *testing.T) {
 	if got := int(attr.Credential.Uid); got != uid {
 		t.Errorf("Credential.Uid = %d, want %d (palai-s07)", got, uid)
 	}
-	if got := int(attr.Credential.Gid); got != macagent.AccountGID {
-		t.Errorf("Credential.Gid = %d, want %d, the group sysadminctl -addUser -GID creates the account in",
-			got, macagent.AccountGID)
+	if got := int(attr.Credential.Gid); got != macagent.GIDBase+7 {
+		t.Errorf("Credential.Gid = %d, want %d — slot 7's OWN group, the one sysadminctl -addUser -GID creates the account in",
+			got, macagent.GIDBase+7)
 	}
 	// NoSetGroups FALSE is the secure value and the counter-intuitive one. Go calls setgroups() only when
 	// it is false; with a nil Groups that is setgroups(0, NULL), so the child ends with NO supplementary
@@ -93,12 +93,16 @@ func TestAUidOutsideTheSessionNamespaceIsRefusedBeforeAnythingIsSpentOnIt(t *tes
 		name  string
 		runAs toolbroker.RunAs
 	}{
-		{"root", toolbroker.RunAs{UID: 0, GID: macagent.AccountGID}},
-		{"the operator", toolbroker.RunAs{UID: 501, GID: macagent.AccountGID}},
-		{"the base itself, which is slot 0 and is not allocated", toolbroker.RunAs{UID: macagent.UIDBase, GID: macagent.AccountGID}},
-		{"one past the last slot", toolbroker.RunAs{UID: macagent.UIDBase + macagent.MaxSlot + 1, GID: macagent.AccountGID}},
-		{"negative", toolbroker.RunAs{UID: -1, GID: macagent.AccountGID}},
+		{"root", toolbroker.RunAs{UID: 0, GID: macagent.GIDBase}},
+		{"the operator", toolbroker.RunAs{UID: 501, GID: macagent.GIDBase}},
+		{"the base itself, which is slot 0 and is not allocated", toolbroker.RunAs{UID: macagent.UIDBase, GID: macagent.GIDBase}},
+		{"one past the last slot", toolbroker.RunAs{UID: macagent.UIDBase + macagent.MaxSlot + 1, GID: macagent.GIDBase + macagent.MaxSlot + 1}},
+		{"negative", toolbroker.RunAs{UID: -1, GID: macagent.GIDBase}},
 		{"a session uid in the wheel group", toolbroker.RunAs{UID: macagent.UIDBase + 7, GID: 0}},
+		// ‼️ THE ROW THE PER-SLOT GROUP EXISTS FOR. Slot 7's uid carrying slot 8's gid is well-formed on
+		// both sides and passed every check this guard had while the group was fleet-wide: it is one
+		// tenant asking for the group bit on ANOTHER tenant's workspace.
+		{"a session uid carrying a DIFFERENT slot's group", toolbroker.RunAs{UID: macagent.UIDBase + 7, GID: macagent.GIDBase + 8}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// euid 0 — the PRIVILEGED branch, because a refusal that only happens on a machine which
@@ -117,7 +121,7 @@ func TestAUidOutsideTheSessionNamespaceIsRefusedBeforeAnythingIsSpentOnIt(t *tes
 // reported and does not exist, and docs/measurements/faz-a5-residue.md §2 measured exactly that.
 func TestAnUnprivilegedExecutorRefusesRatherThanRunningAsItself(t *testing.T) {
 	uid, _ := macagent.AccountUID(7)
-	attr, err := procAttrFor(&toolbroker.RunAs{UID: uid, GID: macagent.AccountGID}, 501)
+	attr, err := procAttrFor(&toolbroker.RunAs{UID: uid, GID: macagent.GIDBase + 7}, 501)
 	if !errors.Is(err, ErrCannotDropPrivilege) {
 		t.Fatalf("procAttrFor(uid %d, euid 501) = (%+v, %v), want ErrCannotDropPrivilege", uid, attr, err)
 	}
@@ -142,7 +146,7 @@ func TestTheShippedRunSurfaceRefusesAPrivilegeDropItCannotMake(t *testing.T) {
 	result, err := NewExecutor(0).Run(context.Background(), toolbroker.ShellCommand{
 		Argv:          []string{"/usr/bin/touch", witness},
 		WorkspaceRoot: root,
-		RunAs:         &toolbroker.RunAs{UID: uid, GID: macagent.AccountGID},
+		RunAs:         &toolbroker.RunAs{UID: uid, GID: macagent.GIDBase + 7},
 	})
 
 	if os.Geteuid() == 0 {
@@ -187,7 +191,7 @@ func TestABackgroundStartRefusesTheSameDropTheSynchronousPathDoes(t *testing.T) 
 	handle, err := NewExecutor(0).Start(context.Background(), toolbroker.ShellCommand{
 		Argv:          []string{"/usr/bin/touch", witness},
 		WorkspaceRoot: root,
-		RunAs:         &toolbroker.RunAs{UID: uid, GID: macagent.AccountGID},
+		RunAs:         &toolbroker.RunAs{UID: uid, GID: macagent.GIDBase + 7},
 	}, toolbroker.BackgroundSpec{TaskID: "bgt_privdrop", OutputPath: ".palai-session/bg/bgt_privdrop.log"})
 	if !errors.Is(err, ErrCannotDropPrivilege) {
 		t.Fatalf("Start() = (%+v, %v), want ErrCannotDropPrivilege", handle, err)

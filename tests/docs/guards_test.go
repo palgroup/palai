@@ -28,6 +28,18 @@ func repoRoot(t *testing.T) string {
 	return strings.TrimSpace(string(out))
 }
 
+// readRepoFile reads one repository-relative file, failing the test if it is not there. Guards in this
+// package assert about the CONTENT of shipped files, so a missing one is a guard that would otherwise
+// pass by having nothing to read.
+func readRepoFile(t *testing.T, rel string) string {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join(repoRoot(t), rel))
+	if err != nil {
+		t.Fatalf("read %s: %v", rel, err)
+	}
+	return string(body)
+}
+
 func readDoc(t *testing.T, rel string) string {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join(repoRoot(t), rel))

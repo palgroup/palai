@@ -72,6 +72,9 @@ type enrolSeams struct {
 	// one: without it every enrolment test on a Mac would fail for want of a privilege the test has no
 	// business holding, which is how a step ends up excluded from enrolment to keep the suite green.
 	InstallAccounts func(context.Context) (macagent.Health, error)
+	// Prober measures what isolation this machine can offer. Zero probes the real daemon socket, which
+	// is what an operator's enrolment does and what a test must never do.
+	Prober *macagent.Prober
 }
 
 func enrol(ctx context.Context, args []string, out io.Writer, seams enrolSeams) error {
@@ -144,7 +147,19 @@ func enrol(ctx context.Context, args []string, out io.Writer, seams enrolSeams) 
 	// STEP 2 — THE SAME ISOLATION MEASUREMENT THE AGENT REPORTS, said out loud here because the person
 	// running `enroll` is standing at the machine. If this Mac can only offer `user`, they learn it now
 	// rather than from a gateway refusal whose reason arrives as an exit code.
-	reportIsolation(ctx, macagent.NewProber(macagent.DefaultSocketPath))
+	// ‼️ THE PROBER IS A SEAM, and it is one because this line reached OUT OF THE TEST and into the
+	// machine. It probed /var/run/palai-agentd.sock by a hardcoded path, so every enrolment test on a
+	// developer's Mac measured that developer's daemon — and the prober retries on a cold-boot policy,
+	// so the test's DURATION became a property of the machine rather than of the product. Measured
+	// 2026-08-08: the same test took 1s, 2s, 10s, 10s and 34s in five consecutive runs, and reddened
+	// `make verify` three times on a bound it has nothing to do with.
+	//
+	// A test that owns its condition is this tree's own rule. The seam is what lets it.
+	probeIsolation := seams.Prober
+	if probeIsolation == nil {
+		probeIsolation = macagent.NewProber(macagent.DefaultSocketPath)
+	}
+	reportIsolation(ctx, probeIsolation)
 
 	// STEP 3 — MEASUREMENT. Every probe is an answer this machine can give about ITSELF, which is the
 	// difference between these and the posture/pool/capacity declarations the control plane records and

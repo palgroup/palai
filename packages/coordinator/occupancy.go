@@ -83,7 +83,7 @@ var ErrMachineAtCapacity = errors.New("machine already holds as many occupancies
 //
 // ‼️ IT IS A BOUNDARY AND NOT A CEILING, WHICH IS WHY IT IS NOT ErrMachineAtCapacity. `runners.capacity`
 // asks how many SESSIONS fit on a Mac; this asks whose sessions may be on it AT ONCE, and the answer is
-// one customer's — docs/operations/mac-sessions.md §5 records that a uid boundary does not survive a
+// one customer's — docs/operations/palai-on-a-mac.md §2 records that a uid boundary does not survive a
 // local-root escalation and that three of those were patched in 2026 alone. Both machines this plane had
 // enrolled on 2026-08-06 were free-fleet and capacity 0 ("undeclared, admits everything"), so before that
 // migration an unlimited number of customers could hold one Mac simultaneously.

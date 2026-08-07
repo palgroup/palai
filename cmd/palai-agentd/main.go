@@ -95,7 +95,7 @@ func run(ctx context.Context, socketPath, groupName, allocationRoot string, logg
 	}
 
 	srv := &Server{
-		Accounts:       NewSysadminctlAccounts(),
+		Accounts:       NewSysadminctlAccounts(allocationRoot),
 		SocketPath:     socketPath,
 		AllocationRoot: allocationRoot,
 		WantGID:        gid,

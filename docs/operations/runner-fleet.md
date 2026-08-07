@@ -240,7 +240,7 @@ the way the pool requires must not appear as a machine that can.
 |---|---|
 | *(omitted)* | nothing. **This is every pool created before 2026-08-07**, and it admits every machine. |
 | `user` | per-session `HOME`/`TMPDIR` under the allocation. Same-customer accident isolation. |
-| `accounts` | one non-admin macOS account per session, minted and destroyed by `palai-agentd` (needs a one-time administrator install — [`mac-sessions.md`](mac-sessions.md) §2). |
+| `accounts` | one non-admin macOS account per session, minted and destroyed by `palai-agentd` (needs a one-time administrator install — [`palai-on-a-mac.md`](palai-on-a-mac.md) §4). |
 | `container` | the Linux OCI sandbox posture. |
 
 **It can now be asked for, which until 2026-08-07 it could not.** `runner_pools.isolation_mode`, its

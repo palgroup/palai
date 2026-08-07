@@ -209,7 +209,7 @@ func (r *WorkspaceRecovery) DestroyAllocation(ctx context.Context, tenant coordi
 	// recreate paths under a tree that was just removed.
 	//
 	// A FAILURE HERE DOES NOT STOP THE TEARDOWN. The bytes are the tenant data; leaving them because an
-	// account could not be removed would be the worse of the two residues, and mac-sessions.sh's `down`
+	// account could not be removed would be the worse of the two residues, and palai-agentd's `down`
 	// is the operator's reconciliation for the account that stayed.
 	// KEYED BY SESSION, WHICH IS THE KEY THIS INTERFACE IS DEFINED ON. It read in.AllocationID until
 	// 2026-08-05, and SlotAccounts.slots is `map[string]int // session id -> slot index` populated by

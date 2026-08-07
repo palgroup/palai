@@ -86,7 +86,7 @@ func NewIdleReleaser(spine *coordinator.Store, snapshots *SnapshotSink, ttl time
 }
 
 // WithSessionAccounts wires the macOS session-account release, so an idle workspace hands back its uid
-// slot as well as its bytes. Without it a machine runs out of the 99 slots mac-sessions.sh allocates long
+// slot as well as its bytes. Without it a machine runs out of the 99 slots palai-agentd allocates long
 // before it runs out of disk, because nothing else on this path frees one.
 func (r *IdleReleaser) WithSessionAccounts(a SessionAccounts) *IdleReleaser {
 	r.accounts = a
@@ -259,7 +259,7 @@ func (r *IdleReleaser) release(ctx context.Context, c coordinator.IdleWorkspace)
 	// THE ACCOUNT GOES BEFORE THE BYTES, for the reason DestroyAllocation gives: destroying the account
 	// kills every process still running as that uid, so the directory removal below is not racing a build
 	// that is still writing into it. A failure does not stop the release — the slot is held until an
-	// operator reconciles (mac-sessions.sh down), and the machine's disk is the more urgent of the two
+	// operator reconciles (palai-agentd down), and the machine's disk is the more urgent of the two
 	// residues. It is keyed by SESSION, which is the key SessionAccounts is defined on and the key Acquire
 	// was called with; an allocation id here would miss the map and destroy nothing while returning nil.
 	if r.accounts != nil {
