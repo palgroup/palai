@@ -688,8 +688,23 @@ func allowUnsafeBind(installed *device.Installation) bool {
 //
 // The environment still answers for the compose and systemd deployments that set it today; an installed
 // device never reads it (plan §3.7 — the compatibility window is theirs, not the packaged agent's).
+// workspaceRoot answers where this machine opens session workspaces, and the ORDER is the whole point:
+// what the deployment CHOSE beats what this platform would have picked.
+//
+// The control plane hands out allocation paths under its own PALAI_WORKSPACE_ROOT and this agent
+// refuses anything outside its root, so the two must name one directory. An enrolled device used to
+// return its platform default unconditionally — env could not correct it, because a LaunchAgent does
+// not inherit the shell that enrolled it — which made every co-located native deployment fail with
+// "workspace path is outside the runner allocation root" the moment enrolment stopped being part of
+// the bring-up.
 func workspaceRoot(installed *device.Installation) string {
+	// AN INSTALLED AGENT READS NOTHING FROM ITS ENVIRONMENT — that is this tree's rule and two guards
+	// enforce it, so the deployment's choice arrives in the CONFIG rather than in a variable. It could
+	// not arrive any other way regardless: a LaunchAgent inherits no shell.
 	if installed != nil {
+		if root := strings.TrimSpace(installed.Config.WorkspaceRoot); root != "" {
+			return root
+		}
 		return installed.Paths.WorkspaceRoot
 	}
 	return os.Getenv("PALAI_WORKSPACE_ROOT")

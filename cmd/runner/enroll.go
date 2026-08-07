@@ -81,6 +81,12 @@ func enrol(ctx context.Context, args []string, out io.Writer, seams enrolSeams) 
 	keyFile := flags.String("key-file", "", "path to the file holding the pool enrolment key (rpk_...), or - to read it from stdin")
 	caFile := flags.String("ca-file", "", "additional trust anchor for a private deployment; omit for a publicly trusted gateway")
 	serverName := flags.String("server-name", "", "identity on the controller's certificate when it differs from the address; omit when the URL host IS the certified name")
+	// The directory this machine opens session workspaces under. It has to be settable HERE, not left to
+	// the environment, because the agent runs as a LaunchAgent and inherits nothing from the shell that
+	// enrolled it — and it has to match what the control plane hands out, or every run fails with
+	// "workspace path is outside the runner allocation root". Empty keeps the platform default.
+	workspaceRootFlag := flags.String("workspace-root", os.Getenv("PALAI_WORKSPACE_ROOT"),
+		"directory this machine opens session workspaces under; must match the control plane's PALAI_WORKSPACE_ROOT on a co-located deployment")
 	flags.Usage = func() {
 		fmt.Fprint(out, "usage: palai enroll --url <controller> --key-file <path> [--ca-file <path>] [--server-name <name>]\n\n"+
 			"Runs once per machine. Writes this device's configuration and identity, installs the\n"+
@@ -201,6 +207,7 @@ func enrol(ctx context.Context, args []string, out io.Writer, seams enrolSeams) 
 		EnrollmentKeyFile: keyPathForConfig,
 		ControllerCAFile:  *caFile,
 		ServerName:        *serverName,
+		WorkspaceRoot:     strings.TrimSpace(*workspaceRootFlag),
 	}
 	if err := config.Save(paths.ConfigFile); err != nil {
 		return fmt.Errorf("write agent config: %w", err)

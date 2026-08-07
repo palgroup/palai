@@ -40,6 +40,17 @@ type Config struct {
 	// case rather than a degraded one. A publicly trusted runner gateway needs nothing here: the system
 	// roots verify it, which is DoD item 2 and the reason PALAI_CONTROLLER_CA stopped being required.
 	ControllerCAFile string `json:"controller_ca_file,omitempty"`
+	// WorkspaceRoot is the directory this machine opens session workspaces under, when the DEPLOYMENT
+	// chose one. Empty means the per-platform default in Paths.
+	//
+	// ‼️ IT EXISTS BECAUSE THE CONTROL PLANE AND THIS AGENT MUST NAME THE SAME DIRECTORY. The
+	// co-located posture (one Mac running both) has the control plane hand out allocation paths under
+	// its own PALAI_WORKSPACE_ROOT, and the agent refuses any path outside its allocation root — so two
+	// answers to one question is a run that fails with "workspace path is outside the runner allocation
+	// root". It was two answers the moment enrolment became independent of the bring-up: an enrolled
+	// device used its platform default and could not be told otherwise, because the env var it would
+	// have read is not inherited by a LaunchAgent.
+	WorkspaceRoot string `json:"workspace_root,omitempty"`
 }
 
 // ErrUnsafePermissions is what a file readable by anyone but its owner is refused with. It is a distinct
