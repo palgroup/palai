@@ -336,6 +336,36 @@ func (a *SysadminctlAccounts) removeSlotGroup(ctx context.Context, slot int) err
 	return nil
 }
 
+// alignPrimaryGroup makes an EXISTING account's primary group the one this daemon allocates for its
+// slot, and it is a repair rather than a check because the alternative is a refusal a session cannot act
+// on.
+//
+// THE CASE IS A MACHINE THAT OUTLIVED A SCHEME CHANGE. Accounts on this Mac were created in one shared
+// group until 2026-08-08; the same records, with the same names and uids, now belong in a group of their
+// own. An upgrade that only changed what NEW accounts get would leave every existing slot in the old
+// group while adopt sets its workspace to the new one — a session that owns nothing it can read, with
+// every layer reporting success.
+func (a *SysadminctlAccounts) alignPrimaryGroup(ctx context.Context, name string, slot int) error {
+	gid, err := macagent.SlotGID(slot)
+	if err != nil {
+		return err
+	}
+	path := "/Users/" + name
+	out, err := a.run(ctx, "dscl", ".", "-read", path, "PrimaryGroupID")
+	if err != nil {
+		return macagent.Errorf(macagent.ClassInternal, "reading the primary group of %s failed: %v: %s", name, err, strings.TrimSpace(out))
+	}
+	if strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(out), "PrimaryGroupID:")) == strconv.Itoa(gid) {
+		return nil
+	}
+	if out, err := a.run(ctx, "dscl", ".", "-create", path, "PrimaryGroupID", strconv.Itoa(gid)); err != nil {
+		return macagent.Errorf(macagent.ClassInternal,
+			"%s exists in another group and could not be moved to %d, so its session would not be able to read its own workspace: %v: %s",
+			name, gid, err, strings.TrimSpace(out))
+	}
+	return nil
+}
+
 // Create makes slot N's account, its home, and the marker that makes it deletable later.
 func (a *SysadminctlAccounts) Create(ctx context.Context, slot int) (string, string, error) {
 	if err := a.requireMac(); err != nil {
@@ -356,6 +386,18 @@ func (a *SysadminctlAccounts) Create(ctx context.Context, slot int) (string, str
 	}
 
 	if rec, err := a.record(ctx, name); err == nil && rec.exists {
+		// ‼️ "ALREADY EXISTS" IS SUCCESS TO THE CALLER, so this branch has to leave the account in the
+		// state a fresh create would have. execution.SlotAccounts treats ClassExists as the outcome it
+		// wanted — deliberately, because a caller that timed out mid-create must not poison the slot — so
+		// an account left over from a previous run is one a session is about to USE. Returning here
+		// without re-asserting the group is how a slot whose group scheme changed under it, or whose
+		// group an operator removed, gets handed to a session that then cannot read its own workspace.
+		if err := a.ensureSlotGroup(ctx, slot); err != nil {
+			return "", "", err
+		}
+		if err := a.alignPrimaryGroup(ctx, name, slot); err != nil {
+			return "", "", err
+		}
 		return "", "", macagent.Errorf(macagent.ClassExists, "%s already exists (uid %d)", name, rec.uid)
 	}
 

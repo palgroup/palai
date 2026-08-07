@@ -719,3 +719,44 @@ func TestARootOwnedAllocationRootIsRefusedRatherThanJoined(t *testing.T) {
 		}
 	}
 }
+
+// TestAnExistingAccountIsMOVEDIntoItsSlotGroup — "ALREADY EXISTS" IS SUCCESS TO THE CALLER.
+//
+// execution.SlotAccounts treats ClassExists as the outcome it wanted, so an account left over from a
+// previous run is one a session is about to USE. This machine's accounts were created in one shared
+// group until 2026-08-08 and the same records now belong in a group of their own: an upgrade that only
+// changed what NEW accounts get would leave every existing slot in the old group while adopt sets its
+// workspace to the new one — a session owning nothing it can read, with every layer reporting success.
+func TestAnExistingAccountIsMOVEDIntoItsSlotGroup(t *testing.T) {
+	rec := &recordingRun{answers: map[string]string{
+		// The record is there, in the OLD shared group.
+		"dscl . -read /Users/palai-s07 UniqueID":                "UniqueID: 707",
+		"dscl . -read /Users/palai-s07 PrimaryGroupID":          "PrimaryGroupID: 700",
+		"dscl . -read /Groups/palai-s07-grp PrimaryGroupID":     "PrimaryGroupID: 807",
+		"dscl . -create /Users/palai-s07 PrimaryGroupID 807":    "",
+		"dseditgroup -o edit -a operator -t user palai-s07-grp": "",
+	}}
+	a := newTestAccounts(t, rec)
+	a.allocationRoot = t.TempDir()
+	a.ownerOf = func(string) (int, error) { return 501, nil }
+	a.lookupUser = func(int) (string, error) { return "operator", nil }
+
+	_, _, err := a.Create(context.Background(), 7)
+	if err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("Create returned %v, want the ClassExists answer for a record that is there", err)
+	}
+
+	const want = "dscl . -create /Users/palai-s07 PrimaryGroupID 807"
+	for _, call := range rec.calls {
+		if strings.Join(call, " ") == want {
+			return
+		}
+	}
+	var got []string
+	for _, call := range rec.calls {
+		got = append(got, "  "+strings.Join(call, " "))
+	}
+	t.Errorf("an existing account was handed back still in its old group — its session would own a "+
+		"workspace it cannot read, and every layer would report success.\nwant\n  %s\ngot\n%s",
+		want, strings.Join(got, "\n"))
+}
