@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"github.com/palgroup/palai/packages/device"
+	"github.com/palgroup/palai/packages/macagent"
 )
 
 // enrollStub is a runner gateway that does exactly what the real one does to a request as far as this
@@ -195,6 +196,7 @@ func (s *enrollStub) sentBodies() []string {
 type enrollFixture struct {
 	home, keyFile, caFile, configPath string
 	servicesInstalled                 int
+	accountsInstalled                 int
 	stub                              *enrollStub
 }
 
@@ -243,6 +245,13 @@ func (f *enrollFixture) seams() enrolSeams {
 		InstallService: func(p device.Paths, spec device.ServiceSpec) (device.InstalledService, error) {
 			f.servicesInstalled++
 			return device.InstalledService{Path: p.ServiceFile, Loaded: true, Started: true}, nil
+		},
+		// The account daemon needs root, which this test does not have and should not want. Counting the
+		// call is the assertion that matters: enrolment must ASK for isolation on a Mac, and a fixture
+		// that silently answered would let the step be removed without a red.
+		InstallAccounts: func(context.Context) (macagent.Health, error) {
+			f.accountsInstalled++
+			return macagent.Health{Version: "test"}, nil
 		},
 	}
 }
@@ -544,5 +553,34 @@ func TestAMachineWithNowhereToWriteIsRefusedBeforeTheGatewayIsCalled(t *testing.
 	}
 	if _, statErr := os.Stat(paths.DeviceKeyFile); statErr == nil {
 		t.Fatal("the refused enrolment still minted and persisted a device key")
+	}
+}
+
+// TestEnrolmentInstallsTheAccountDaemonOnAMac — ONE COMMAND, OR THE MACHINE JOINS THE FLEET UNISOLATED.
+//
+// A session on a Mac is isolated by its uid and by nothing else, and only palai-agentd can open one.
+// Enrolment installed the RUNNER service and stopped until 2026-08-07, so a freshly enrolled Mac
+// accepted work and ran every customer's on one uid — while scripts/install/install.sh already told
+// operators that enrolling installed the service. The claim was right and the code was not.
+//
+// THE COUNT IS THE ASSERTION, and it is why the fixture's seam counts rather than silently succeeding:
+// what has to stay true is that enrolment ASKS. A rented Mac is provisioned by user-data that runs as
+// root exactly once, and a second privileged step nobody is there to type is a step that never happens.
+func TestEnrolmentInstallsTheAccountDaemonOnAMac(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("the account daemon is a macOS mechanism; enrolment installs it only there")
+	}
+	f := newEnrollFixture(t)
+	var out strings.Builder
+	if err := enrol(context.Background(), f.args(), &out, f.seams()); err != nil {
+		t.Fatalf("enrol: %v", err)
+	}
+	if f.accountsInstalled != 1 {
+		t.Fatalf("enrolment asked for the account daemon %d time(s), want exactly 1 — without it this Mac "+
+			"takes sessions and runs every customer's work as one uid", f.accountsInstalled)
+	}
+	if !strings.Contains(out.String(), "accounts ") {
+		t.Errorf("enrolment does not report the account daemon, so an operator cannot tell whether this "+
+			"machine can isolate:\n%s", out.String())
 	}
 }

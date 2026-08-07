@@ -149,7 +149,9 @@ main() {
 		*) log "note: $PALAI_INSTALL_PREFIX is not on PATH" ;;
 	esac
 
-	log "next: palai enroll --url <controller> --key-file <path>   (enrol installs and starts the service)"
+	log "next: palai enroll --url <controller> --key-file <path>"
+	log "      one command: it enrols, installs the runner service, and on macOS installs palai-agentd"
+	log "      so the machine can open a per-session account. Run it as root; nothing asks again after."
 }
 
 main "$@"

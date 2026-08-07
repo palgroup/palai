@@ -41,26 +41,33 @@ func agentdSource() (string, error) {
 	return source, nil
 }
 
-// runAgentdInstall puts the daemon on this machine and reports what it MEASURED, never what it attempted.
-func runAgentdInstall(ctx context.Context, out io.Writer) error {
+// installAgentd puts the account daemon on this machine and returns what it MEASURED off the socket,
+// never what it attempted. It is the ONE install path: `palai agentd install` calls it, and so does
+// `palai enroll`, because a device that enrols and cannot open a session account is a device that runs
+// every customer's work as one uid.
+func installAgentd(ctx context.Context) (macagent.Health, error) {
 	source, err := agentdSource()
 	if err != nil {
-		return err
+		return macagent.Health{}, err
 	}
 	plist, err := macosdeploy.LaunchDaemonPlist()
 	if err != nil {
-		return fmt.Errorf("read the launch daemon description: %w", err)
+		return macagent.Health{}, fmt.Errorf("read the launch daemon description: %w", err)
 	}
-
-	probe := macagent.NewProber(macagent.DefaultSocketPath)
-	health, err := macagent.Install{
+	return macagent.Install{
 		Elevation: macagent.DetectElevation(ctx, os.Geteuid, macagent.ExecRunner),
 		Run:       macagent.ExecRunner,
 		Source:    source,
 		Plist:     plist,
-		Verify:    probe,
+		Verify:    macagent.NewProber(macagent.DefaultSocketPath),
 		TempDir:   os.TempDir(),
 	}.Apply(ctx)
+}
+
+// runAgentdInstall is the explicit verb. It exists for a machine that was enrolled before enrolment
+// installed the daemon, and for an operator re-running the install after replacing the binary.
+func runAgentdInstall(ctx context.Context, out io.Writer) error {
+	health, err := installAgentd(ctx)
 	if errors.Is(err, macagent.ErrCannotElevate) {
 		exe, _ := os.Executable()
 		return fmt.Errorf("%w\n\n  run it once as root on this machine:\n      sudo %s agentd install", err, exe)

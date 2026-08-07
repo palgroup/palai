@@ -67,6 +67,11 @@ type enrolSeams struct {
 	// InstallService replaces the platform service installation. Zero means device.Install, which shells
 	// out to launchctl or systemctl — the thing a test must not do to the machine running it.
 	InstallService func(device.Paths, device.ServiceSpec) (device.InstalledService, error)
+	// InstallAccounts replaces the palai-agentd installation. Zero means installAgentd, which needs
+	// root — so a test drives this seam for the same reason it drives InstallService, and for a sharper
+	// one: without it every enrolment test on a Mac would fail for want of a privilege the test has no
+	// business holding, which is how a step ends up excluded from enrolment to keep the suite green.
+	InstallAccounts func(context.Context) (macagent.Health, error)
 }
 
 func enrol(ctx context.Context, args []string, out io.Writer, seams enrolSeams) error {
@@ -236,6 +241,38 @@ func enrol(ctx context.Context, args []string, out io.Writer, seams enrolSeams) 
 	}
 	fmt.Fprintf(out, "service   %s (loaded=%t started=%t)\n", installed.Path, installed.Loaded, installed.Started)
 	fmt.Fprintf(out, "logs      %s\n", paths.LogFile)
+
+	// STEP 8 — THE ACCOUNT DAEMON, ON THE SAME COMMAND AND NOT A SECOND ONE.
+	//
+	// A session on a Mac is isolated by its uid and by nothing else, and only palai-agentd can open one.
+	// Until 2026-08-07 enrolment installed the RUNNER service and stopped, so a freshly enrolled Mac
+	// accepted sessions and ran every customer's work as one uid — and the fix an operator needed was a
+	// separate `sudo palai agentd install` that scripts/install/install.sh already claimed enrolment did.
+	// The claim was right and the code was not.
+	//
+	// IT MATTERS MOST ON A MACHINE NOBODY LOGS INTO. A rented Mac is provisioned by user-data that runs
+	// as root exactly once; a second privileged step nobody is there to type is a step that does not
+	// happen, and the machine joins the fleet unisolated. One command at machine birth is the only shape
+	// that survives an unattended install.
+	installAccounts := seams.InstallAccounts
+	if installAccounts == nil {
+		installAccounts = installAgentd
+	}
+	if runtime.GOOS == "darwin" {
+		health, agentErr := installAccounts(ctx)
+		switch {
+		case agentErr != nil:
+			// NOT SWALLOWED, for the reason the service failure above is not: this machine is enrolled and
+			// will take work. Reporting success here would hand the fleet a Mac that cannot isolate anything
+			// while its operator believes the opposite.
+			return fmt.Errorf("the machine is enrolled as %s and its runner service is installed, but the "+
+				"session-account daemon is not: %w\n\nUNTIL IT IS, EVERY SESSION ON THIS MAC RUNS AS ONE UID. "+
+				"Re-run this enrolment as root, or install it alone with `palai agentd install`", identity.RunnerID, agentErr)
+		default:
+			fmt.Fprintf(out, "accounts  palai-agentd on %s (version %s, %d open)\n",
+				macagent.DefaultSocketPath, stampOrUnknown(health.Version), len(health.Slots))
+		}
+	}
 	return nil
 }
 
