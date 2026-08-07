@@ -26,6 +26,11 @@ const socketMode os.FileMode = 0o660
 // goroutine on a root daemon open forever.
 const connDeadline = 10 * time.Second
 
+// accountConnDeadline bounds a request that does real work in the OPERATING SYSTEM rather than answering
+// from memory. It mirrors macagent.AccountExchangeTimeout on the client, and the two are kept equal on
+// purpose: bounds that disagree are a connection one side closes while the other is still waiting.
+const accountConnDeadline = 90 * time.Second
+
 // Server answers requests on a unix socket.
 type Server struct {
 	Accounts   Accounts
@@ -125,6 +130,19 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 	if err != nil && (line == "" || !errors.Is(err, io.EOF)) {
 		s.write(conn, macagent.Err(macagent.ClassBadRequest, "could not read a request line: "+err.Error()))
 		return
+	}
+	// ‼️ THE VERB DECIDES THE DEADLINE, and this is the SERVER half of a bound the client already got.
+	// `sysadminctl -addUser` writes a user record and a home directory; on a busy Mac that is seconds. A
+	// ten-second connection deadline closed the socket mid-create and the caller read EOF — measured on
+	// a real Mac on 2026-08-07, on the SECOND session, because the first found its account already there
+	// and never took this path.
+	//
+	// Raising it for everything would give back the protection it exists for: a client that connects and
+	// says nothing still gets ten seconds, because version and list answer from memory and a slow answer
+	// from either IS the wedge that bound is for.
+	if req, err := macagent.ParseRequest(line); err == nil && (req.Verb == macagent.VerbCreate ||
+		req.Verb == macagent.VerbDelete || req.Verb == macagent.VerbAdopt) {
+		_ = conn.SetDeadline(time.Now().Add(accountConnDeadline))
 	}
 	s.write(conn, s.answer(ctx, line))
 }
