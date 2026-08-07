@@ -137,7 +137,7 @@ func (s *Store) RequestToolApproval(ctx context.Context, tenant Tenant, in ToolA
 		expires = in.ExpiresAt
 	}
 	if _, err := tx.Exec(ctx, storage.Query("InsertToolApproval"),
-		in.ApprovalID, in.ToolCallID, tenant.Project, in.RequestHash, "", expires); err != nil {
+		in.ApprovalID, in.ToolCallID, tenant.Project, in.RequestHash, expires); err != nil {
 		return fmt.Errorf("open tool approval: %w", err)
 	}
 	// THE ORDER TO ASK (E23 T8), committed in the SAME transaction as the approval that parks the run —

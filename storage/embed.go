@@ -133,6 +133,16 @@ var migrationUp9 string
 //go:embed migrations/000009_drop_slack_cutover_tables.down.sql
 var migrationDown9 string
 
+// 000010 removes `approvals.allowed_approver`, which held nothing and closed nothing. E23's plan measured
+// it as D5 on 2026-07-29 and docs/operations/approvals.md has told operators the same since: "it is not a
+// control and never was". The control is the PROJECT's approver list, checked in approverAuthorizedTx.
+//
+//go:embed migrations/000010_drop_vestigial_allowed_approver.up.sql
+var migrationUp10 string
+
+//go:embed migrations/000010_drop_vestigial_allowed_approver.down.sql
+var migrationDown10 string
+
 //go:embed queries/agents.sql
 var agentsSQL string
 
@@ -286,7 +296,8 @@ var knowledgeSQL string
 // the whole chain is safe to re-run — which it is, in full, on every boot.
 func MigrationUp() string {
 	return migrationUp + "\n" + migrationUp2 + "\n" + migrationUp3 + "\n" + migrationUp4 + "\n" + migrationUp5 +
-		"\n" + migrationUp6 + "\n" + migrationUp7 + "\n" + migrationUp8 + "\n" + migrationUp9
+		"\n" + migrationUp6 + "\n" + migrationUp7 + "\n" + migrationUp8 + "\n" + migrationUp9 +
+		"\n" + migrationUp10
 }
 
 // MigrationDown reverses MigrationUp in the opposite order: 000007 drops the device-key uniqueness and the
@@ -307,7 +318,7 @@ func MigrationUp() string {
 // reddened twenty-five component fixtures that never mention a secret. Every other link here is reversible
 // unconditionally.
 func MigrationDown() string {
-	return migrationDown9 + "\n" + migrationDown8 + "\n" + migrationDown7 + "\n" + migrationDown6 + "\n" + migrationDown5 + "\n" + migrationDown4 + "\n" + migrationDown3 + "\n" +
+	return migrationDown10 + "\n" + migrationDown9 + "\n" + migrationDown8 + "\n" + migrationDown7 + "\n" + migrationDown6 + "\n" + migrationDown5 + "\n" + migrationDown4 + "\n" + migrationDown3 + "\n" +
 		migrationDown2 + "\n" + migrationDown
 }
 

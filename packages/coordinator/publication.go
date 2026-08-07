@@ -87,21 +87,20 @@ func ApproverPrincipal(surface, workspace, id string) string {
 // the adapter (repositories.IdempotencyKey/RequestHash) so the dedupe + one-shot binding are one
 // definition.
 type PublicationRequest struct {
-	PublicationID   string
-	ApprovalID      string
-	SessionID       string
-	RunID           string
-	ResponseID      string
-	Operation       string // push_branch | open_pull_request
-	Remote          string
-	Branch          string
-	Base            string
-	HeadSHA         string
-	IdempotencyKey  string
-	RequestHash     string
-	Display         string
-	Args            map[string]any
-	AllowedApprover string
+	PublicationID  string
+	ApprovalID     string
+	SessionID      string
+	RunID          string
+	ResponseID     string
+	Operation      string // push_branch | open_pull_request
+	Remote         string
+	Branch         string
+	Base           string
+	HeadSHA        string
+	IdempotencyKey string
+	RequestHash    string
+	Display        string
+	Args           map[string]any
 }
 
 // Publication is the durable projection of a publication row + its approval binding (spec §30.8). It is
@@ -252,7 +251,7 @@ func (s *Store) RequestPublication(ctx context.Context, tenant Tenant, in Public
 	// (ApprovalTTL), because a human reading two kinds of question has one attention span.
 	expiresAt := time.Now().Add(ApprovalTTL())
 	if _, err := tx.Exec(ctx, storage.Query("InsertApproval"),
-		in.ApprovalID, in.PublicationID, tenant.Project, in.RequestHash, in.AllowedApprover, expiresAt); err != nil {
+		in.ApprovalID, in.PublicationID, tenant.Project, in.RequestHash, expiresAt); err != nil {
 		return Publication{}, fmt.Errorf("insert approval: %w", err)
 	}
 	// THE ORDER TO POST (E23 T3, 000044 R4), committed in the SAME transaction as the approval it

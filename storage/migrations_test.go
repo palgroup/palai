@@ -12,12 +12,18 @@ import (
 // per-migration source the boot runner iterates (E15 T1). It also pins the chain head, so the
 // preflight/journal invariant is anchored.
 //
-// THE CHAIN IS EIGHT LINKS AND IT WAS SIXTY-SEVEN. It was squashed to a two-file baseline on 2026-08-04;
+// THE CHAIN IS TEN LINKS AND IT WAS SIXTY-SEVEN. It was squashed to a two-file baseline on 2026-08-04;
 // 000003_lease_occupancy (Faz A.4 T1) was the first ordinary forward migration written against it, then
 // 000004_response_metadata, 000005_capacity_declaration (Faz A.4 T5),
 // 000006_project_scoped_secrets_and_environments (Faz A.6 T0),
-// 000007_device_identity_and_pool_isolation (zero-touch device agent, T2), and
-// 000008_machine_tenant_exclusivity (one customer at a time on a shared Mac) is now the head.
+// 000007_device_identity_and_pool_isolation (zero-touch device agent, T2) and
+// 000008_machine_tenant_exclusivity (one customer at a time on a shared Mac).
+//
+// THE LAST TWO SUBTRACT, which is new for this chain and is stated so the next reader does not assume a
+// forward migration always adds: 000009_drop_slack_cutover_tables removed five tables the Slack cutover
+// emptied, and 000010_drop_vestigial_allowed_approver — the head — removed a column that held nothing and
+// closed nothing. Both were measured before they were dropped and both carry the measurement in their own
+// headers.
 //
 // THE PIN IS A RENAME GUARD AS MUCH AS A HEAD PIN, and that is why the NAME is pinned beside the number:
 // `git mv` stages the OLD content, so a renumbering whose header edit is never re-added leaves a file
@@ -62,12 +68,12 @@ func TestOrderedMigrationsIsContiguousVersionOrder(t *testing.T) {
 	}
 
 	head := migrations[len(migrations)-1]
-	if head.Version != 9 || head.Name != "drop_slack_cutover_tables" {
-		t.Fatalf("chain head = %06d_%s, want 000009_drop_slack_cutover_tables", head.Version, head.Name)
+	if head.Version != 10 || head.Name != "drop_vestigial_allowed_approver" {
+		t.Fatalf("chain head = %06d_%s, want 000010_drop_vestigial_allowed_approver", head.Version, head.Name)
 	}
 	penultimate := migrations[len(migrations)-2]
-	if penultimate.Version != 8 || penultimate.Name != "machine_tenant_exclusivity" {
-		t.Fatalf("penultimate migration = %06d_%s, want 000008_machine_tenant_exclusivity", penultimate.Version, penultimate.Name)
+	if penultimate.Version != 9 || penultimate.Name != "drop_slack_cutover_tables" {
+		t.Fatalf("penultimate migration = %06d_%s, want 000009_drop_slack_cutover_tables", penultimate.Version, penultimate.Name)
 	}
 
 	// The concatenated MigrationUp() must carry exactly the same forward SQL the per-migration path

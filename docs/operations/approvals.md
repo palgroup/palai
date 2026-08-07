@@ -157,8 +157,11 @@ Consequences worth stating rather than discovering:
   — there is no "may approve a push but not a PR".
 - **A session's oldest pending approval is the decidable one.** Two approvals open at once means the
   second waits its turn (inherited, unchanged).
-- **`approvals.allowed_approver` is not this.** That column exists, is written with a value no caller ever
-  sets, and is read by nothing. It is not a control and never was; this list is.
+- **`approvals.allowed_approver` was not this, and as of 2026-08-07 it is gone.** The column existed from
+  the first schema, was written with a value no caller ever set, and was read by nothing — E23's plan
+  measured that on 2026-07-29 and this page has said it in its own voice ever since. It was never a
+  control; this list is. `000010_drop_vestigial_allowed_approver` removed it, which changes nothing about
+  who may decide: the check has always been `approverAuthorizedTx` against the list below.
 
 ## Proofs
 

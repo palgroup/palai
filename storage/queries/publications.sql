@@ -18,8 +18,8 @@ RETURNING id;
 -- InsertApproval records the one-shot approval binding for a publication (spec §22.4). It rides the
 -- publication's first insert only (the caller skips it on a replay).
 -- name: InsertApproval
-INSERT INTO approvals (id, publication_id, project_id, request_hash, allowed_approver, expires_at)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO approvals (id, publication_id, project_id, request_hash, expires_at)
+VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (publication_id) DO NOTHING;
 
 -- GetPublicationByKey reads a publication by its idempotency key — the replay read after an ON CONFLICT
@@ -175,8 +175,8 @@ ON CONFLICT (id) DO NOTHING;
 -- call with no approval (REP-009, inherited for free). expires_at is finally set by somebody — 000013
 -- forward-declared it and until this epic nothing ever wrote a value into it.
 -- name: InsertToolApproval
-INSERT INTO approvals (id, tool_call_id, project_id, request_hash, allowed_approver, expires_at)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO approvals (id, tool_call_id, project_id, request_hash, expires_at)
+VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (tool_call_id) DO NOTHING;
 
 -- LockToolCallForDecision locks the gated call so a decision is single-winner: two clicks on the same
