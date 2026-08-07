@@ -126,7 +126,24 @@ func (s *StreamSupervisor) Stream(ctx context.Context, request EngineRequest, in
 	frames := make(chan streamRead)
 	go readStdout(runCtx, process.Stdout(), request.Limits, frames)
 
-	go injectControllerFrames(runCtx, process, inbound)
+	// ‼️ THE INJECTOR HAS ITS OWN CANCEL, AND SHARING runCtx's WAS THE BUG. Both halves of the duplex
+	// hung off one context, so stdin stayed open until the whole supervise call returned — which is
+	// AFTER classify has spent its thirty seconds waiting for the container to exit. The engine cannot
+	// exit while stdin is open: engines/reference's loop is `for line in sys.stdin`, ending only on a
+	// TERMINAL frame or EOF, so a run whose output finished without a terminal sat there being waited
+	// for by a supervisor that was itself the reason it could not leave.
+	//
+	// Measured 2026-08-07 on a live plane: coding runs — the ones that emit tool frames and can end
+	// their output without a terminal — failed this way roughly half the time, logging
+	// `engine wait did not complete after stdout closed` and then `engine exceeded wall-time bound` on
+	// the retry. Closing the write half first is not a courtesy: it is the signal the engine is waiting
+	// for.
+	injectCtx, stopInjecting := context.WithCancel(runCtx)
+	// Deferred as well as called explicitly below: every early return between here and there leaves
+	// through this one, and cancelling twice is a no-op. Relying on runCtx's own defer would work —
+	// injectCtx is its child — but it would make the guarantee something a reader has to derive.
+	defer stopInjecting()
+	go injectControllerFrames(injectCtx, process, inbound)
 
 	ledger := NewFrameLedger()
 	stdoutBytes, lastSeq, err := s.handshake(runCtx, request, frames, ledger, sink)
@@ -178,6 +195,11 @@ loop:
 		}
 	}
 
+	// STDIN IS SHUT BEFORE THE CONTAINER IS WAITED FOR. The engine's output has ended, so there is
+	// nothing left to send it, and EOF on stdin is what lets a well-behaved engine return 0 — see the
+	// injector's own cancel above. Waiting first and closing afterwards is what produced a thirty-second
+	// timeout on every run whose output ended without a terminal frame.
+	stopInjecting()
 	return s.classify(request, &result, stdoutBytes, waitCh, stderrDone, &stderr)
 }
 
