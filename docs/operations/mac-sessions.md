@@ -58,6 +58,52 @@ Both are idempotent: running the same command twice does not create eight of any
 destructive without `--apply`, and `--apply` is a flag rather than a prompt because these scripts
 run unattended.
 
+## 3b. Tell the control plane it may use them — the step that was missing from this page
+
+**Sections 3 and 4 create the accounts and prove they are isolated from each other. Neither makes the
+control plane USE one.** Until the two steps below are done, `mac-sessions.sh verify` passes, four accounts
+exist, and every session's commands still run as the uid the control plane itself runs as — which §7 is
+explicit is *not* a boundary. This page omitted them until 2026-08-07; the omission is written down rather
+than quietly filled because the shape it produces — a green verify over an unused mechanism — is exactly
+what §4's own title warns about.
+
+**One. Grant the wrapper, and read the grant first.** The privileged surface is
+`scripts/ops/palai-session-account`: two verbs, one two-digit index, no pass-through. It PRINTS the sudoers
+line rather than writing it, because a file that grants passwordless root is one an operator reads before
+it exists.
+
+```sh
+scripts/ops/palai-session-account install-sudoers "$(id -un)"
+# read the line it prints, then:
+sudo tee /etc/sudoers.d/palai-session-account   # paste it, then Ctrl-D
+sudo chmod 0440 /etc/sudoers.d/palai-session-account
+sudo visudo -cf /etc/sudoers.d/palai-session-account   # must say "parsed OK"
+```
+
+**Two. Point the control plane at it.** `PALAI_SESSION_ACCOUNT_HELPER` is an absolute path, and its default
+is unset — which the deployment surface reports in those words: *"no privileged path exists; every session's
+commands run as the agent's own uid, which is same-customer accident isolation and NOT a boundary"*.
+
+```sh
+PALAI_SESSION_ACCOUNT_HELPER=/abs/path/to/scripts/ops/palai-session-account   # then restart the control plane
+```
+
+**‼️ SET IT ONLY AFTER STEP ONE.** The variable is what makes the control plane REQUIRE an account per
+session; with it set and the sudoers entry missing, `sudo -n` fails immediately (that `-n` is deliberate — a
+prompt would hang a process with no terminal) and every shell command fails closed. That is the correct
+direction to fail in, and it is still an outage if the two steps are done out of order.
+
+**Three. Prove it end to end, on a real run.** The accounts existing and the plane using them are two
+different claims, and this is the one that measures the second:
+
+```sh
+make test-live-ios-demo ARGS=--with-accounts
+```
+
+It runs a real session and asserts the command inside it ran as `palai-sNN` rather than as the control
+plane's own uid. Without the `--with-accounts` leg the same smoke passes on a deployment with no boundary
+at all.
+
 ## 4. Verify — because a boundary you did not test is a boundary you do not have
 
 ```sh

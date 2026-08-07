@@ -11,6 +11,7 @@
 package docs_test
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -262,5 +263,58 @@ func TestMacSessionsDocIsSourcedAndHonest(t *testing.T) {
 		if !strings.Contains(doc, want) {
 			t.Errorf("%s does not contain %q", macDoc, want)
 		}
+	}
+}
+
+// TestTheAccountsPageTellsAnOperatorHowTheControlPlaneUSESTheAccounts — CREATING A BOUNDARY AND USING IT
+// ARE TWO CLAIMS, AND THIS PAGE MADE ONLY THE FIRST.
+//
+// ‼️ MEASURED 2026-08-07: docs/operations/mac-sessions.md named `PALAI_SESSION_ACCOUNT_HELPER` and
+// `palai-session-account` ZERO times. §3 tells an operator to create the accounts and §4 proves they are
+// isolated FROM EACH OTHER — and nothing on the page said the control plane still runs every session's
+// commands as its own uid until the sudoers entry is installed and the variable is set. An operator who
+// followed it end to end got four accounts, a green `verify`, and no boundary. §4's own title is "a
+// boundary you did not test is a boundary you do not have"; the untested half was the one it omitted.
+//
+// THE GUARD IS KEYED ON THE INSTRUCTION, NOT ON A FILENAME. Any operator page that tells somebody to bring
+// accounts up owes them the step that makes the accounts load-bearing — so the subject is "a page
+// containing `--mode accounts`", and a second page that grows the same instruction inherits the same duty
+// without anybody remembering to add it here.
+func TestTheAccountsPageTellsAnOperatorHowTheControlPlaneUSESTheAccounts(t *testing.T) {
+	root := repoRoot(t)
+	pages, err := filepath.Glob(filepath.Join(root, "docs/operations/*.md"))
+	if err != nil {
+		t.Fatalf("list the operations pages: %v", err)
+	}
+	// NON-VACUITY: a glob that matched nothing, or a corpus where nobody brings accounts up, would pass
+	// this test while saying nothing at all.
+	if len(pages) < 5 {
+		t.Fatalf("found %d operations page(s), want at least 5 — the glob is wrong and every assertion below is vacuous", len(pages))
+	}
+	subjects := 0
+	for _, page := range pages {
+		body, err := os.ReadFile(page)
+		if err != nil {
+			t.Fatalf("read %s: %v", page, err)
+		}
+		text := string(body)
+		if !strings.Contains(text, "--mode accounts") {
+			continue
+		}
+		subjects++
+		rel := strings.TrimPrefix(page, root+"/")
+		for _, owed := range []struct{ token, why string }{
+			{"palai-session-account", "the privileged wrapper the control plane invokes; without its sudoers entry the plane cannot mint an account at all"},
+			{"PALAI_SESSION_ACCOUNT_HELPER", "the variable that makes the control plane USE the accounts; unset, every session's commands run as the plane's own uid"},
+		} {
+			if !strings.Contains(text, owed.token) {
+				t.Errorf("%s tells an operator to bring accounts up with `--mode accounts` and never names %s — %s. "+
+					"A page that creates a boundary and does not say how to switch it on leaves a reader with a green "+
+					"verify over a mechanism nothing uses", rel, owed.token, owed.why)
+			}
+		}
+	}
+	if subjects == 0 {
+		t.Fatal("no operations page contains `--mode accounts`, so this guard has no subject — either the instruction moved and this test must follow it, or the mode is gone and this test should go with it")
 	}
 }
