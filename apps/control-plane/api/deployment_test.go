@@ -242,6 +242,8 @@ var credentialBearingEnv = []string{
 	"PALAI_CONSOLE_PASSWORD_HASH",    // the console door's scrypt hash
 	"PALAI_API_KEY",                  // a bearer token
 	"PALAI_WORKER_ENROLL_TOKEN",      // fresh per boot, re-presentable within that boot
+	"PALAI_ENROLLMENT_TOKEN",         // the credential a machine presents to enrol; a bearer value on the wire
+	"PALAI_RUNNER_PRIVATE_KEY",       // a machine's device key. Reserved out of an engine's environment too
 }
 
 func TestNoCredentialBearingVariableIsCatalogued(t *testing.T) {
@@ -293,14 +295,26 @@ func TestEveryComposeSettingIsCataloguedOrDeclaredUnreported(t *testing.T) {
 	}
 	// Variables read from the process environment but not SET by compose are legitimate (an operator or a
 	// native launch may export them), so the reverse direction only fails for a catalogue entry naming a
-	// variable NO reader in the tree mentions — checked by the citation guard below rather than here. What
-	// this half pins is the unreported list, which exists solely to explain compose's own keys.
+	// variable NO reader in the tree mentions — checked by the citation guard below rather than here.
+	//
+	// ‼️ WHAT THIS HALF PINS IS THAT AN EXEMPTION CORRESPONDS TO SOMETHING REAL, and until 2026-08-07 the
+	// only "something real" it knew was a compose key, because the only names on the list were compose's.
+	// The read→catalogue walk then grew to cover the RUNNER plane, and its exemptions are names no compose
+	// file sets — a machine's own bootstrap addresses, the undeliverable unsafe-bind opt-in, the two names
+	// the supervisor reserves out of an engine's environment. Those are not stale, they are elsewhere. So
+	// the question the guard asks is the one it always meant: does anything in this tree still use the name?
+	// A rule that answered "compose key" would have forced a second exemption list, which is two places to
+	// hide a setting instead of one.
+	readSomewhere := settingNamesReadInTree(t, repoRootFromTest(t))
+	if len(readSomewhere) < 40 {
+		t.Fatalf("the reader scan found %d PALAI_ name(s) in the tree, want at least 40 — it is broken, and every exemption below would look live", len(readSomewhere))
+	}
 	for name, reason := range unreportedSettings {
 		if reason == "" {
 			t.Errorf("unreportedSettings[%s] carries no reason — an exemption nobody has to justify is a place to hide a setting", name)
 		}
-		if !inCompose[name] {
-			t.Errorf("unreportedSettings names %s, which deploy/compose/compose.yaml no longer sets — a stale exemption widens the rule for a variable that may come back meaning something else", name)
+		if !inCompose[name] && len(readSomewhere[name]) == 0 {
+			t.Errorf("unreportedSettings names %s, which deploy/compose/compose.yaml no longer sets and which nothing in the tree reads — a stale exemption widens the rule for a variable that may come back meaning something else", name)
 		}
 	}
 }
@@ -748,6 +762,47 @@ func TestACataloguedDefaultIsTheOneTheCodeApplies(t *testing.T) {
 // or credentialBearingEnv (a value that may never be reported at all). A name needs one of the three, and
 // each is a sentence somebody had to write — which is the point, because an exemption nobody has to justify
 // is a place to hide a setting.
+// settingNamesReadInTree is every PALAI_ name mentioned by non-test Go source under the two planes' own
+// trees. It is the shared reader scan: TestEveryReadSettingIsCataloguedOrDeclaredUnreported asks which of
+// these are undeclared, and the exemption list's reverse check asks which declarations still correspond to
+// one. One scan, two directions — a second copy would let the halves disagree about what "read" means.
+func settingNamesReadInTree(t *testing.T, root string) map[string][]string {
+	t.Helper()
+	literal := regexp.MustCompile(`"(PALAI_[A-Z0-9_]+)"`)
+	names := map[string][]string{}
+	for _, dir := range settingReaderDirs {
+		err := filepath.Walk(filepath.Join(root, dir), func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if info.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			src, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			rel := strings.TrimPrefix(path, root+"/")
+			for _, m := range literal.FindAllStringSubmatch(string(src), -1) {
+				names[m[1]] = append(names[m[1]], rel)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("scan %s for setting names: %v", dir, err)
+		}
+	}
+	return names
+}
+
+// settingReaderDirs are the trees whose processes read this deployment's settings: the control plane, and
+// the MACHINE — which reads its own. Walking only the first would leave the runner plane exactly as unswept
+// as the control plane was before 2026-08-07.
+var settingReaderDirs = []string{
+	"apps/control-plane", "cmd/runner", "cmd/palai-agentd",
+	"packages/runner", "packages/device", "packages/macagent",
+}
+
 func TestEveryReadSettingIsCataloguedOrDeclaredUnreported(t *testing.T) {
 	root := repoRootFromTest(t)
 	catalogued := map[string]bool{}
@@ -759,33 +814,7 @@ func TestEveryReadSettingIsCataloguedOrDeclaredUnreported(t *testing.T) {
 		credential[name] = true
 	}
 
-	literal := regexp.MustCompile(`"(PALAI_[A-Z0-9_]+)"`)
-	read := map[string][]string{}
-	walkErr := filepath.Walk(filepath.Join(root, "apps/control-plane"), func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		switch {
-		case info.IsDir(), !strings.HasSuffix(path, ".go"), strings.HasSuffix(path, "_test.go"):
-			return nil
-		// The catalogue files name every setting by construction; reading them back would make this test
-		// assert that the catalogue contains itself.
-		case strings.HasSuffix(path, "deployment.go"), strings.HasSuffix(path, "deployment_desired.go"):
-			return nil
-		}
-		src, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		rel := strings.TrimPrefix(path, root+"/")
-		for _, m := range literal.FindAllStringSubmatch(string(src), -1) {
-			read[m[1]] = append(read[m[1]], rel)
-		}
-		return nil
-	})
-	if walkErr != nil {
-		t.Fatalf("walk apps/control-plane: %v", walkErr)
-	}
+	read := settingNamesReadInTree(t, root)
 
 	// NON-VACUITY: a walk that found nothing would pass, and so would one whose regexp stopped matching.
 	if len(read) < 40 {
@@ -807,8 +836,8 @@ func TestEveryReadSettingIsCataloguedOrDeclaredUnreported(t *testing.T) {
 	}
 	sort.Strings(missing)
 	for _, name := range missing {
-		t.Errorf("%s is read by this process and the deployment surface neither reports it nor declares why "+
-			"it does not. Add a deploymentCatalogue entry, an unreportedSettings reason, or credentialBearingEnv "+
+		t.Errorf("%s is read by one of this deployment's own processes and the surface neither reports it nor declares "+
+			"why it does not. Add a deploymentCatalogue entry, an unreportedSettings reason, or credentialBearingEnv "+
 			"if its VALUE is a credential — an operator cannot see a setting nobody decided about", name)
 	}
 }

@@ -1230,6 +1230,26 @@ var unreportedSettings = map[string]string{
 	// enrolment REQUEST — a ceiling delivered by the answer cannot bound the question that asked for it. So
 	// cmd/runner reads it from the machine's own environment, and a `runner_pool` row here would tell an
 	// operator to type it into a panel where it would do nothing.
+	// --- THE RUNNER PLANE'S OWN, declared here on 2026-08-07 when the read→catalogue walk grew to cover it.
+	// Every one is read by a MACHINE's process and this control plane holds no copy, so a catalogue row would
+	// put a control in a panel where it would do nothing. ---
+	"PALAI_RUNNER_ID":         "runner-scoped: the id a machine calls itself before the registry has given it one. It is a bootstrap default, not a setting — the id that ends up authoritative is the one the plane MINTS at enrolment, readable on GET /v1/runners.",
+	"PALAI_RUNNER_DNS":        "runner-scoped: the SAN a machine asks its certificate to carry, defaulted from its own hostname. The certificate the plane ISSUES is what decides; this is only what was asked for.",
+	"PALAI_ENROLLMENT_URL":    "runner-scoped: the enrolment endpoint the MACHINE posts to, derived on the box from PALAI_CONTROLLER_URL and overridable there. This process serves that route; it does not read the address a machine reaches it on.",
+	"PALAI_RENEW_URL":         "runner-scoped: the certificate-renewal endpoint, same derivation and same reason as the enrolment one.",
+	"PALAI_SESSION_URL":       "runner-scoped: the session endpoint a machine dials, same derivation and same reason.",
+	"PALAI_SETTINGS_URL":      "runner-scoped: where a machine POLLS for its pool document, derived on the box from PALAI_CONTROLLER_URL.",
+	"PALAI_SETTINGS_INTERVAL": "runner-scoped: how often a machine polls for that document. It is the MACHINE's cadence — the plane cannot make a box ask more often by writing a number here.",
+	// ‼️ IT IS NOT A CATALOGUE ROW PRECISELY BECAUSE IT MUST NOT BE DELIVERABLE. The switch exists so a
+	// control plane ALONE cannot make a runner mount an arbitrary host path: the machine has to have said yes
+	// too (§24 trust boundary), and an INSTALLED device can never say it at all — allowUnsafeBind refuses
+	// structurally when a device installation is present, before it ever reads the environment. A panel that
+	// could set it would be the plane granting itself the second half of a two-party consent.
+	"PALAI_WORKSPACE_UNSAFE_BIND": "runner-scoped, and deliberately UNDELIVERABLE: it opts one machine into honouring a lease's unsafe local bind, and the whole point is that the control plane cannot grant it. An installed device refuses it structurally; compose/Helm/systemd operators set it in a file they own.",
+	// --- RESERVED NAMES, not settings. The supervisor sets or forbids these on the ENGINE's environment, so
+	// there is nothing for an operator to configure and a catalogue row would invite them to try. ---
+	"PALAI_RUN_ID":     "not a setting: a reserved name the supervisor SETS on an engine's environment (packages/runner.reservedEnvKeys), so a value in the deployment's own environment is ignored rather than honoured.",
+	"PALAI_ATTEMPT_ID": "not a setting: reserved the same way, for the same reason.",
 	"PALAI_RUNNER_CAPACITY": "runner-scoped: how many sessions the MACHINE declares it can hold at once. " +
 		"This process holds no copy, and the pool document cannot carry it either — it is read from the machine's " +
 		"own environment at ENROLMENT, before any document reaches it. The number a machine actually declared is " +
