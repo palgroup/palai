@@ -62,6 +62,17 @@ func (s *Server) adopt(ctx context.Context, slot int) macagent.Response {
 		if walkErr != nil {
 			return walkErr
 		}
+		// ‼️ THE SLOT ROOT ITSELF IS NOT GIVEN AWAY, and that is the boundary this whole verb draws.
+		// The RUNNER creates each allocation directory inside it — that is the process that opens a
+		// workspace on this machine — so a root handed to the session account locks the runner out of
+		// its own container on the very next attempt: `mkdir …/slot-02/alloc_…: permission denied`,
+		// measured on a real Mac on 2026-08-08, on a retry of the run that had just adopted.
+		//
+		// So the root stays with whoever made it, traversable, and everything INSIDE it becomes the
+		// account's. The container is the runner's; the contents are the tenant's.
+		if path == dir {
+			return os.Chmod(path, slotRootMode)
+		}
 		if err := os.Lchown(path, uid, macagent.AccountGID); err != nil {
 			return err
 		}
@@ -73,9 +84,6 @@ func (s *Server) adopt(ctx context.Context, slot int) macagent.Response {
 		// The SLOT ROOT is the exception and it is 0711: the runner has to resolve a path through it to
 		// open the allocation, and traverse is all that takes. It cannot LIST what is inside, and what
 		// is inside is owner-only, so the runner learns nothing by walking through.
-		if path == dir {
-			return os.Chmod(path, slotRootMode)
-		}
 		if entry != nil && entry.IsDir() {
 			return os.Chmod(path, 0o700)
 		}
