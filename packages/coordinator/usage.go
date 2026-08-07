@@ -161,6 +161,16 @@ type usageEntry struct {
 	// string-parsing an idempotency detail. Because the identity was ALREADY per-step, storing it
 	// changes nothing about which rows collide (migration 000050).
 	modelRequestID string
+	// runnerID names the MACHINE a hold was billed on, and only machine.minutes sets it — every other
+	// meter settles work that has no machine and leaves it empty, which SettleUsage keeps NULL.
+	//
+	// It is the same promotion modelRequestID above describes, for the same reason and one meter later:
+	// the id was already in the dedupe key (`lease:<id>:machine.minutes` joins runner_leases), so a
+	// reader could always get there by string-parsing an idempotency detail. What it could not do was
+	// ask the ledger which machine cost this project its minutes. `run_id` cannot answer that either and
+	// is deliberately empty here — one occupancy hosts many runs — so before 000011 a machine-minutes
+	// row named a session and nothing else.
+	runnerID string
 }
 
 // ledgerID derives a ledger row's stable identity from the tenant and the dedupe key, so the SAME fact
@@ -186,7 +196,7 @@ func settleUsage(ctx context.Context, tx pgx.Tx, tenant Tenant, entries ...usage
 		}
 		if _, err := tx.Exec(ctx, storage.Query("SettleUsage"),
 			ledgerID(tenant, e.dedupeKey), tenant.Project,
-			e.sessionID, e.runID, e.meter, e.quantity, e.dedupeKey, e.unit, e.modelRequestID); err != nil {
+			e.sessionID, e.runID, e.meter, e.quantity, e.dedupeKey, e.unit, e.modelRequestID, e.runnerID); err != nil {
 			return fmt.Errorf("settle usage %s: %w", e.meter, err)
 		}
 	}

@@ -224,6 +224,7 @@ func (s *Store) SettleOccupancy(ctx context.Context, tenant Tenant, leaseID, rea
 	// naming any of them would attribute a machine's whole hold to whichever run happened to be last.
 	if err := settleUsage(ctx, tx, tenant, usageEntry{
 		sessionID: closed.SessionID,
+		runnerID:  closed.RunnerID,
 		meter:     meterMachineMinutes, unit: unitMinute,
 		dedupeKey: "lease:" + leaseID + ":" + meterMachineMinutes,
 		quantity:  closed.Billed.Minutes(),

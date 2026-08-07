@@ -143,6 +143,17 @@ var migrationUp10 string
 //go:embed migrations/000010_drop_vestigial_allowed_approver.down.sql
 var migrationDown10 string
 
+// 000011 gives `usage_ledger` a `runner_id`, so a `machine.minutes` row can name the machine it billed.
+// It could not: `run_id` is deliberately empty for that meter (one occupancy hosts many runs), leaving the
+// machine recoverable only by parsing `dedupe_key`. The value was already in hand at settle time and was
+// being dropped.
+//
+//go:embed migrations/000011_usage_ledger_names_the_machine.up.sql
+var migrationUp11 string
+
+//go:embed migrations/000011_usage_ledger_names_the_machine.down.sql
+var migrationDown11 string
+
 //go:embed queries/agents.sql
 var agentsSQL string
 
@@ -297,7 +308,7 @@ var knowledgeSQL string
 func MigrationUp() string {
 	return migrationUp + "\n" + migrationUp2 + "\n" + migrationUp3 + "\n" + migrationUp4 + "\n" + migrationUp5 +
 		"\n" + migrationUp6 + "\n" + migrationUp7 + "\n" + migrationUp8 + "\n" + migrationUp9 +
-		"\n" + migrationUp10
+		"\n" + migrationUp10 + "\n" + migrationUp11
 }
 
 // MigrationDown reverses MigrationUp in the opposite order: 000007 drops the device-key uniqueness and the
@@ -318,7 +329,7 @@ func MigrationUp() string {
 // reddened twenty-five component fixtures that never mention a secret. Every other link here is reversible
 // unconditionally.
 func MigrationDown() string {
-	return migrationDown10 + "\n" + migrationDown9 + "\n" + migrationDown8 + "\n" + migrationDown7 + "\n" + migrationDown6 + "\n" + migrationDown5 + "\n" + migrationDown4 + "\n" + migrationDown3 + "\n" +
+	return migrationDown11 + "\n" + migrationDown10 + "\n" + migrationDown9 + "\n" + migrationDown8 + "\n" + migrationDown7 + "\n" + migrationDown6 + "\n" + migrationDown5 + "\n" + migrationDown4 + "\n" + migrationDown3 + "\n" +
 		migrationDown2 + "\n" + migrationDown
 }
 

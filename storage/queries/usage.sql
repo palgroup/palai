@@ -17,9 +17,14 @@
 -- triples that happened to hash equal would silently lose a settlement, which in a money path is the one
 -- failure mode worse than an error. Naming the dedupe unique keeps the replay a no-op while a genuine id
 -- collision (or any unique constraint added later) raises 23505 loudly instead of dropping revenue.
+--
+-- `runner_id` is the machine a hold sat on, and only `machine.minutes` ever fills it — every other meter
+-- settles work that has no machine and passes "", which `nullif` keeps NULL rather than turning into a
+-- machine named "". Before 000011 the id was recoverable only by parsing `dedupe_key`, whose job is
+-- idempotency, not identity.
 -- name: SettleUsage
-INSERT INTO usage_ledger (id, project_id, session_id, run_id, meter, quantity, unit, dedupe_key, model_request_id)
-VALUES ($1, $2, nullif($3, ''), nullif($4, ''), $5, $6, $8, $7, nullif($9, ''))
+INSERT INTO usage_ledger (id, project_id, session_id, run_id, meter, quantity, unit, dedupe_key, model_request_id, runner_id)
+VALUES ($1, $2, nullif($3, ''), nullif($4, ''), $5, $6, $8, $7, nullif($9, ''), nullif($10, ''))
 ON CONFLICT (project_id, dedupe_key) DO NOTHING;
 
 -- ExhaustedBudget returns the caller's first budget whose cumulative settled usage since period_start

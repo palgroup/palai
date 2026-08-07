@@ -37,6 +37,7 @@ type ledgerRow struct {
 	dedupeKey string
 	sessionID string
 	runID     string
+	runnerID  string
 }
 
 // machineRows reads every machine-time entry settled for this tenant, oldest first.
@@ -48,7 +49,8 @@ type ledgerRow struct {
 func (e *fleetEnv) machineRows(t *testing.T) []ledgerRow {
 	t.Helper()
 	rows, err := e.cs.Pool().Query(storage.WithSystemScope(context.Background()),
-		`SELECT meter, unit, quantity, dedupe_key, coalesce(session_id, ''), coalesce(run_id, '')
+		`SELECT meter, unit, quantity, dedupe_key, coalesce(session_id, ''), coalesce(run_id, ''),
+		        coalesce(runner_id, '')
 		   FROM usage_ledger WHERE project_id = $1 AND meter = 'machine.minutes'
 		  ORDER BY occurred_at, id`, e.tenant.Project)
 	if err != nil {
@@ -58,7 +60,7 @@ func (e *fleetEnv) machineRows(t *testing.T) []ledgerRow {
 	var out []ledgerRow
 	for rows.Next() {
 		var r ledgerRow
-		if err := rows.Scan(&r.meter, &r.unit, &r.quantity, &r.dedupeKey, &r.sessionID, &r.runID); err != nil {
+		if err := rows.Scan(&r.meter, &r.unit, &r.quantity, &r.dedupeKey, &r.sessionID, &r.runID, &r.runnerID); err != nil {
 			t.Fatalf("scan settled machine time: %v", err)
 		}
 		out = append(out, r)
@@ -327,5 +329,59 @@ func TestAHoldThatMovedMachinesIsClosedAndBilledRatherThanLeftOpen(t *testing.T)
 	// written when a hold ENDS, and an open hold has no final amount to write.
 	if !held[1].ReleasedAt.IsZero() {
 		t.Fatal("the new hold was closed as soon as it opened — the session is on that machine right now")
+	}
+}
+
+// TestEachSettledHoldNamesTheMachineItWasBilledOn — THE METER IS CALLED machine.minutes AND THE ROW
+// COULD NOT NAME THE MACHINE.
+//
+// A settled `machine.minutes` row carries a session, a quantity and a dedupe key. `run_id` is empty on
+// purpose (one occupancy hosts many runs) and `model_request_id` means nothing for a hold, so until
+// 000011 the only trace of WHICH Mac a customer's minutes ran on was the dedupe key's string shape —
+// `lease:<id>:machine.minutes`, joined back to runner_leases. A dedupe key exists to make a settlement
+// idempotent. Reading identity out of it is the same defeated design this tree keeps finding in path and
+// membership comparisons, and it is why the id is now a column.
+//
+// THE ASSERTION IS PER-ROW AND ORDER-INDEPENDENT, which is the whole strength of it. Counting distinct
+// machines would pass for a ledger that swapped the two ids; asserting "some row names runnerA" would
+// pass for a ledger that wrote runnerA twice. Each row is matched to ITS OWN lease through the dedupe
+// key and then asked which machine it names, so a constant, a swap and an empty column all fail — and
+// the A.4 exit gate's claim ("machine.minutes ledger rows carry runner_id") has a witness that means it.
+func TestEachSettledHoldNamesTheMachineItWasBilledOn(t *testing.T) {
+	env := newFleetEnv(t)
+	session := env.seedSession(t)
+
+	// One session, two machines, in sequence — the shape a customer produces by being moved.
+	first := env.mustAcquire(t, session, env.runnerA)
+	time.Sleep(settlementHold)
+	env.mustSettle(t, first, "closed")
+
+	second := env.mustAcquire(t, session, env.runnerB)
+	time.Sleep(settlementHold)
+	env.mustSettle(t, second, "closed")
+
+	byLease := map[string]string{}
+	for _, r := range env.machineRows(t) {
+		byLease[r.dedupeKey] = r.runnerID
+	}
+	if len(byLease) != 2 {
+		t.Fatalf("%d settled hold(s), want 2 — this test needs both to exist before it can ask which machine each names", len(byLease))
+	}
+	for _, want := range []struct{ lease, machine string }{
+		{first, env.runnerA},
+		{second, env.runnerB},
+	} {
+		key := "lease:" + want.lease + ":machine.minutes"
+		got, ok := byLease[key]
+		if !ok {
+			t.Fatalf("no settled row for hold %s — the dedupe key this test matches on is not the one the settlement wrote", want.lease)
+		}
+		if got == "" {
+			t.Errorf("hold %s settled with no machine: a machine.minutes row that cannot say which Mac it billed leaves the id recoverable only by parsing its own dedupe key", want.lease)
+			continue
+		}
+		if got != want.machine {
+			t.Errorf("hold %s billed to machine %q, want %q — the ledger attributes this customer's minutes to the wrong Mac", want.lease, got, want.machine)
+		}
 	}
 }
