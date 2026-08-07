@@ -102,7 +102,7 @@ handed the work to "T5/T6" and both of those shipped without it.
 and `palai admin pool create` reach the same place — `palai admin <resource>` hands the resource straight to
 the same dispatcher — so an owner copying either from an older document gets a working command. What is
 *still* wrong is a third spelling that appeared in E24's own handover block: `palai admin pool key create`.
-There is no `key` subcommand under `pool`; the enrolment key's verb is `palai poolkey create --pool <pool_id>`.
+There is no `key` subcommand under `pool`, and as of 2026-08-07 there is no `poolkey` verb either: the enrolment key is minted with `POST /v1/runner-pools/<pool_id>/keys`, which is what that verb was fronting.
 `TestE24HandoverBlockStillDoesNotWork` asserts both halves, and it was itself corrected by the E28 exit gate,
 which found it driving a resource string the binary never produces — a guard passing on an input that cannot
 occur, which is the same defect it exists to catch, one layer down.
@@ -117,9 +117,13 @@ A machine authenticates itself to the control plane with a **pool enrolment key*
 **once**, at mint:
 
 ```bash
-palai poolkey create --pool pool_mac        # PRINTS THE VALUE ONCE
-palai poolkey list   --pool pool_mac        # prefixes and state, never a value
-palai poolkey revoke rpk_…                  # answers with the machines it did NOT stop
+# PRINTS THE VALUE ONCE — the response is the only place it can ever be read
+curl -sS -X POST "$PALAI_BASE_URL/v1/runner-pools/pool_mac/keys" -H "Authorization: Bearer $PALAI_API_KEY" \
+  -H 'content-type: application/json' -d '{}'
+# prefixes and state, never a value
+curl -sS "$PALAI_BASE_URL/v1/runner-pools/pool_mac/keys" -H "Authorization: Bearer $PALAI_API_KEY"
+# answers with the machines it did NOT stop
+curl -sS -X POST "$PALAI_BASE_URL/v1/runner-pool-keys/rpk_…/revoke" -H "Authorization: Bearer $PALAI_API_KEY"
 ```
 
 Write the value into the machine's `/etc/palai/runner/runner-token` and set `PALAI_RUNNER_POOL` to the pool

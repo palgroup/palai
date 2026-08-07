@@ -66,8 +66,10 @@ func cliResources(t *testing.T) (direct, admin []string) {
 		// TWO ANCHORS, AND THEY MOVED ON 2026-08-07 WHEN `project` LEFT THE CLI. The line is identified by
 		// members rather than by position, so a reordered switch still resolves; what it cannot survive is
 		// an anchor that is DELETED, which is what `project` became. `poolkey` and `model` are the two now,
-		// and neither appears on any other `case "` line in main.go — measured, not assumed.
-		if slices.Contains(set, "poolkey") && slices.Contains(set, "model") {
+		// and neither appears on any other `case "` line in main.go — measured, not assumed. `poolkey` was
+		// the first anchor and it lasted one slice: T1 deletes it too. `pool` and `model` survive T1 whole,
+		// which is the property an anchor needs — a member that outlives the change it is anchoring.
+		if slices.Contains(set, "pool") && slices.Contains(set, "model") {
 			direct = set
 		}
 	}
@@ -188,8 +190,15 @@ func TestTheRunbookCommandGuardCanActuallyFail(t *testing.T) {
 	subs := cliSubcommands(t)
 
 	// The positive half FIRST, so the negatives below cannot both be true of an empty parse.
-	if !slices.Contains(direct, "pool") || !slices.Contains(direct, "poolkey") {
-		t.Fatalf("neither `pool` nor `poolkey` is in the direct dispatch set %v — the parse produced nothing usable, so every assertion here is vacuous", direct)
+	// ‼️ THE MEMBERS ARE `pool` AND `model`, AND THE MESSAGE SAYS WHAT THE CONDITION CHECKS. It required
+	// `pool` AND `poolkey` while saying "neither … is", which reads as an OR and describes a different
+	// failure than the one it produces — the shape this tree files under "an assertion that points at the
+	// wrong file". `poolkey` also left the CLI on 2026-08-07, so requiring it made this floor fail for the
+	// deletion rather than for a broken parse, which is exactly the confusion a floor exists to prevent.
+	for _, member := range []string{"pool", "model"} {
+		if !slices.Contains(direct, member) {
+			t.Fatalf("%q is missing from the direct dispatch set %v — the parse produced nothing usable, so every assertion here is vacuous", member, direct)
+		}
 	}
 	if !slices.Contains(admin, "runner") {
 		t.Fatalf("`runner` is not reachable through `palai admin <resource>` (%v) — the machine lifecycle is reached ONLY that way, so a parse that lost it would accept a runbook printing anything", admin)

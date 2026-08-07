@@ -1,4 +1,4 @@
-// Package admin is the `palai apikey|secret|pool|poolkey|runner|model` admin CLI: a thin authenticated
+// Package admin is the `palai apikey|secret|pool|runner|model` admin CLI: a thin authenticated
 // HTTP client over the E13 provisioning + secret-ref APIs (router.go:152-187), the E24 runner-pool key
 // surface and the E24 T5 machine lifecycle. It adds NO server surface — every subcommand maps to one
 // existing endpoint. Until the E17 console it is the only human interface for tenancy admin (spec §47.6),
@@ -79,7 +79,6 @@ type flags struct {
 	scopes     multiFlag
 	expiresAt  string
 	name       string
-	pool       string
 	posture    string
 	osName     string
 	arch       string
@@ -128,11 +127,6 @@ func (f *flags) register(fs *flag.FlagSet, resource string) {
 		fs.BoolVar(&f.strict, "strict", false, "enrolling into this pool needs a human approval (create, set-strict) — omit on set-strict to close the waiting room")
 		fs.StringVar(&f.isolation, "isolation", "", "the session-isolation mechanism a machine must MEASURE to enrol here: user, accounts or container — omit to require none, which is every pool shipped so far (create)")
 		fs.BoolVar(&f.shared, "shared", false, "the PLANE owns this pool: every project on the installation may be placed onto it (create). Omitted, the pool is reserved to this key's project")
-	case "poolkey":
-		// There is deliberately no flag carrying a key value: a pool key only ever comes OUT of `create`,
-		// and everything else names it by id. Nothing here can put a credential in argv.
-		fs.StringVar(&f.pool, "pool", "", "runner pool id (required for create; narrows list)")
-		fs.StringVar(&f.expiresAt, "expires-at", "", "RFC3339 expiry, optional (create) — omitted means the key never expires")
 	case "runner":
 		// No flags at all. Every subcommand either takes no argument (`list`) or names ONE machine by the
 		// id the server minted, so there is nothing to configure and nothing that could carry a credential.
@@ -371,42 +365,6 @@ func (c *Client) execute(resource, sub string, pos []string, f *flags) error {
 	// The runner-pool enrolment key (E24 T3). `create` prints the value ONCE — it is the same
 	// create-only field `apikey create` returns, and the same rule applies: the CLI prints it and
 	// retains nothing.
-	case "poolkey":
-		switch sub {
-		case "create":
-			if f.pool == "" {
-				return errors.New("poolkey create requires --pool <pool_id> (a key admits into exactly one pool)")
-			}
-			b := map[string]any{}
-			if f.expiresAt != "" {
-				b["expires_at"] = f.expiresAt
-			}
-			return c.do(http.MethodPost, "/v1/runner-pools/"+esc(f.pool)+"/keys", body(b))
-		case "list":
-			if f.pool == "" {
-				return errors.New("poolkey list requires --pool <pool_id>")
-			}
-			return c.do(http.MethodGet, "/v1/runner-pools/"+esc(f.pool)+"/keys", nil)
-		case "revoke":
-			// By id, never by value: a revoke that took the value would put a credential in argv and in
-			// every access log between here and the control plane.
-			return c.do(http.MethodPost, "/v1/runner-pool-keys/"+esc(pos[0])+"/revoke", nil)
-		}
-	// THE MACHINE LIFECYCLE (E24 T5) — `palai admin runner cordon|resume|revoke|list`.
-	//
-	// It exists because §3.6 D15 measured that `Revoke()` — SAN-011's hard stop, written for a compromised
-	// runner — had NO PRODUCTION CALLER anywhere in the tree. There was no way for a human to say
-	// "decommission that Mac". This is it, and it is a CLI rather than a console screen because the console
-	// has no authentication at all (§0.2): a fleet-moving write behind an unauthenticated proxy would undo
-	// what this epic builds.
-	//
-	// `revoke` IS IRREVERSIBLE and the CLI does not prompt, deliberately: neither `apikey revoke` nor
-	// `poolkey revoke` does, and a confirmation on only one of the three teaches an operator the others are
-	// safe.
-	// AND `approve` (E24 T6): the human a strict pool waits for. It rides the same one-machine-one-verb shape
-	// as the three above, and the difference is on the server — the route is gated on the `approve`
-	// capability rather than on `provision`, so the key an operator uses here may be a key that can do
-	// nothing else. That is the point of the separate capability rather than an accident of routing.
 	case "runner":
 		switch sub {
 		case "list":
@@ -706,10 +664,9 @@ func (c *Client) routeThroughConnection(f *flags) error {
 // usageErr names the subcommands a resource accepts.
 func usageErr(resource string) error {
 	subs := map[string]string{
-		"apikey":  "create --project <prj_id> [--scope <s>]... | list | get <key_id> | revoke <key_id>",
-		"secret":  "create --name <n> (value on stdin) | list | get <name> | rotate <name> (value on stdin)",
-		"pool":    "create --name <n> --posture <sandboxed-linux|unsandboxed-host> [--os <o>] [--arch <a>] [--strict] | list | set-strict <pool_id> [--strict] (posture is fixed at creation: machines inherit it)",
-		"poolkey": "create --pool <pool_id> [--expires-at <rfc3339>] (value printed once) | list --pool <pool_id> | revoke <key_id>",
+		"apikey": "create --project <prj_id> [--scope <s>]... | list | get <key_id> | revoke <key_id>",
+		"secret": "create --name <n> (value on stdin) | list | get <name> | rotate <name> (value on stdin)",
+		"pool":   "create --name <n> --posture <sandboxed-linux|unsandboxed-host> [--os <o>] [--arch <a>] [--strict] | list | set-strict <pool_id> [--strict] (posture is fixed at creation: machines inherit it)",
 		// Spelled with its prefix, because that is the only spelling that works: the lifecycle is reached as
 		// `palai admin runner …` so it cannot be confused with the local runner container.
 		"runner": "list | approve <runner_id> | cordon <runner_id> | resume <runner_id> | revoke <runner_id> (revoke is IRREVERSIBLE)",

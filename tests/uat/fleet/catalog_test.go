@@ -76,7 +76,12 @@ var expectedFleetCatalog = map[string]struct {
 	"FLT-002": {"component-real", 12, "the wrong-pool refusal (two-sided), the chosen FIFO order, the posture compared at the door, and the no-pool-configured deployment that is bit-unchanged"},
 	// T3+T6 — the pool key and the waiting room. The three halves of revocation are three separate proofs, and
 	// two of them are REGRESSION FENCES rather than features.
-	"FLT-003": {"component-real", 32, "scope, hash, constant-time comparison, expiry, the three halves of revocation, the key that is not an API key, the value that reaches no row or log, and strict enrolment with its bit-unchanged default"},
+	// 32 -> 31 ON 2026-08-07, DELIBERATELY: the `palai poolkey` verb left the CLI and its proof went with
+	// it. Nothing about the key's behaviour changed — the withdrawn leg's two claims moved rather than
+	// vanished (see the WITHDRAWN note in cases/FLT-003/case.yaml: the one-time disclosure is asserted
+	// in runner_pool_key_component_test.go against a real database, and "a create must name its pool"
+	// became structural in POST /v1/runner-pools/{pool_id}/keys).
+	"FLT-003": {"component-real", 31, "scope, hash, constant-time comparison, expiry, the three halves of revocation, the key that is not an API key, the value that reaches no row or log, and strict enrolment with its bit-unchanged default"},
 	// T4 — the tenant and the park. The wake and the run left ALONE are both listed: a waker that woke
 	// everything would satisfy the first.
 	"FLT-004": {"component-real", 14, "the cross-tenant refusal, the park instead of the dead letter, the wake that does not reserve, the other waiting run left alone, and the pool recorded on the run"},

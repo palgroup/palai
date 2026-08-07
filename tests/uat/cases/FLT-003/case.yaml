@@ -20,7 +20,18 @@ proof:
   - apps/control-plane/api/runner_pools_test.go:TestRunnerPoolKeyRevokeNamesTheMachinesItDidNotStop
   - apps/control-plane/api/runner_pools_test.go:TestRunnerPoolKeyRoutesRequireTheProvisionCapability
   - apps/control-plane/api/runner_pools_test.go:TestRunnerPoolKeyMintOnAForeignPoolIs404
-  - cmd/cli/internal/admin/admin_test.go:TestPoolKeyCreateRequiresAPoolAndPrintsTheValueOnce
+  # WITHDRAWN 2026-08-07 — the `palai poolkey` verb left the CLI (T1 of the two-component plan: the API
+  # already served create/list/revoke, so the CLI was a second source of truth). The proof went with the
+  # verb, and its two claims went to two DIFFERENT places rather than being dropped:
+  #   - "the one-time value is shown exactly once" is the product's claim and is asserted where the value is
+  #     minted — apps/control-plane/internal/execution/runner_pool_key_component_test.go, against a real
+  #     database: "the value is shown exactly once and this was that once".
+  #   - "a create with no --pool is refused before any request" was a CLI-side guard. It is now STRUCTURAL:
+  #     the route is POST /v1/runner-pools/{pool_id}/keys, so the pool is in the path and there is nothing
+  #     to default. A claim a URL makes impossible is stronger than one a flag parser enforced.
+  # The case TEXT above is shipped and is left byte-for-byte; the checksum reads neither this list nor the
+  # text (caseChecksumParts hashes id + run_id + the release's contracts digest).
+  #   - cmd/cli/internal/admin/admin_test.go:TestPoolKeyCreateRequiresAPoolAndPrintsTheValueOnce
   - cmd/cli/internal/admin/admin_test.go:TestPoolKeyRevokeRejectsASecondPositional
   - apps/control-plane/internal/execution/runner_strict_component_test.go:TestStrictEnrolmentHoldsTheMachineOutOfTheRendezvousUntilAHumanApproves
   - apps/control-plane/internal/execution/runner_strict_component_test.go:TestStrictOffIsBitUnchanged
