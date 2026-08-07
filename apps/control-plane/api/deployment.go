@@ -1227,6 +1227,7 @@ var unreportedSettings = map[string]string{
 	"PALAI_RENEW_URL":         "runner-scoped: the certificate-renewal endpoint, same derivation and same reason as the enrolment one.",
 	"PALAI_SESSION_URL":       "runner-scoped: the session endpoint a machine dials, same derivation and same reason.",
 	"PALAI_SETTINGS_URL":      "runner-scoped: where a machine POLLS for its pool document, derived on the box from PALAI_CONTROLLER_URL.",
+	"PALAI_LOGS_URL":          "runner-scoped: where a machine SHIPS the lines it wrote, derived from the one controller address exactly as the settings URL is. It is read by cmd/runner and never by the control plane, which is the READER of those lines rather than a sender.",
 	"PALAI_SETTINGS_INTERVAL": "runner-scoped: how often a machine polls for that document. It is the MACHINE's cadence — the plane cannot make a box ask more often by writing a number here.",
 	// ‼️ IT IS NOT A CATALOGUE ROW PRECISELY BECAUSE IT MUST NOT BE DELIVERABLE. The switch exists so a
 	// control plane ALONE cannot make a runner mount an arbitrary host path: the machine has to have said yes

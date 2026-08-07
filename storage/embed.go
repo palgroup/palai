@@ -154,6 +154,16 @@ var migrationUp11 string
 //go:embed migrations/000011_usage_ledger_names_the_machine.down.sql
 var migrationDown11 string
 
+// 000012 gives a machine's own log a place in the installation. The runner plane had four routes and
+// none of them carried a line the agent wrote, so "what went wrong on that Mac" was answerable only by
+// logging into it — which is the one thing a fleet cannot do.
+//
+//go:embed migrations/000012_runner_logs.up.sql
+var migrationUp12 string
+
+//go:embed migrations/000012_runner_logs.down.sql
+var migrationDown12 string
+
 //go:embed queries/agents.sql
 var agentsSQL string
 
@@ -308,7 +318,7 @@ var knowledgeSQL string
 func MigrationUp() string {
 	return migrationUp + "\n" + migrationUp2 + "\n" + migrationUp3 + "\n" + migrationUp4 + "\n" + migrationUp5 +
 		"\n" + migrationUp6 + "\n" + migrationUp7 + "\n" + migrationUp8 + "\n" + migrationUp9 +
-		"\n" + migrationUp10 + "\n" + migrationUp11
+		"\n" + migrationUp10 + "\n" + migrationUp11 + "\n" + migrationUp12
 }
 
 // MigrationDown reverses MigrationUp in the opposite order: 000007 drops the device-key uniqueness and the
@@ -329,7 +339,7 @@ func MigrationUp() string {
 // reddened twenty-five component fixtures that never mention a secret. Every other link here is reversible
 // unconditionally.
 func MigrationDown() string {
-	return migrationDown11 + "\n" + migrationDown10 + "\n" + migrationDown9 + "\n" + migrationDown8 + "\n" + migrationDown7 + "\n" + migrationDown6 + "\n" + migrationDown5 + "\n" + migrationDown4 + "\n" + migrationDown3 + "\n" +
+	return migrationDown12 + "\n" + migrationDown11 + "\n" + migrationDown10 + "\n" + migrationDown9 + "\n" + migrationDown8 + "\n" + migrationDown7 + "\n" + migrationDown6 + "\n" + migrationDown5 + "\n" + migrationDown4 + "\n" + migrationDown3 + "\n" +
 		migrationDown2 + "\n" + migrationDown
 }
 

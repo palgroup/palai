@@ -30,6 +30,7 @@ import (
 	"github.com/palgroup/palai/packages/runner"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 	"github.com/palgroup/palai/packages/version"
+	"io"
 )
 
 func main() {
@@ -82,12 +83,30 @@ func main() {
 	reportIsolation(ctx, macagent.NewProber(macagent.DefaultSocketPath))
 
 	installed := installedDevice()
-	bootstrap, tokenFile, sessionURL, renewURL, settingsURL, controllerDNS, controllerCAs := loadConfig(installed)
+	bootstrap, tokenFile, sessionURL, renewURL, settingsURL, logsURL, controllerDNS, controllerCAs := loadConfig(installed)
+
+	// WHAT THIS MACHINE SAYS ABOUT ITSELF NOW REACHES THE PLANE. The agent's own log output is teed into
+	// a bounded buffer and shipped on a timer; until 2026-08-07 it went to a file on the machine and
+	// nowhere else, so "what went wrong on that Mac" was answerable only by logging into it.
+	//
+	// It is a TEE and not a redirect: the local file stays exactly as it was, because a machine that
+	// cannot reach its plane is precisely the machine whose log somebody will need, and shipping is the
+	// half that fails first.
+	logBuffer := runner.NewLogBuffer(0)
+	log.SetOutput(io.MultiWriter(os.Stderr, logBuffer))
 
 	identity, err := runner.Enroll(ctx, bootstrap)
 	if err != nil {
 		log.Fatalf("enroll: %v", err)
 	}
+	// The shipper starts once there is an identity to present: every runner-plane call is mutually
+	// authenticated, so there is nothing to ship logs with before this point. Failures are dropped
+	// rather than retried — a machine that cannot reach its plane must keep doing its work, and a retry
+	// queue on the machine least able to notice is how a diagnostic becomes an outage.
+	if logsURL != "" {
+		go shipLogs(ctx, logBuffer, logsURL, controllerCAs, controllerDNS, func() runner.Identity { return identity })
+	}
+
 	// The token is spent. Drop it from memory: the recovery path below re-reads the mounted file
 	// at the moment it needs it, so nothing keeps a bootstrap credential resident for the
 	// runner's lifetime.
@@ -250,7 +269,7 @@ func reportIsolation(ctx context.Context, probe *macagent.Prober) {
 // into the environment, and it is the file the expired-identity recovery path re-reads. Unset
 // leaves the runner with no recovery path — an expired identity is then terminal, and the
 // serve loop says so.
-func loadConfig(installed *device.Installation) (bootstrap runner.BootstrapConfig, tokenFile, sessionURL, renewURL, settingsURL, controllerDNS string, controllerCAs *x509.CertPool) {
+func loadConfig(installed *device.Installation) (bootstrap runner.BootstrapConfig, tokenFile, sessionURL, renewURL, settingsURL, logsURL, controllerDNS string, controllerCAs *x509.CertPool) {
 	// ‼️ AN INSTALLED DEVICE READS NO ENVIRONMENT AT ALL. This branch is the whole point of `enroll`: its
 	// inputs are the config on disk and this machine's own identity, so the running agent reads zero
 	// `PALAI_` names. Every line below it is the COMPOSE path — the deployments that exist today, which
@@ -332,6 +351,9 @@ func loadConfig(installed *device.Installation) (bootstrap runner.BootstrapConfi
 		derivedEnv("PALAI_SESSION_URL", controllerURL, outboundSessionURL),
 		derivedEnv("PALAI_RENEW_URL", controllerURL, joinPath("/v1/runner/renew")),
 		derivedEnv("PALAI_SETTINGS_URL", controllerURL, joinPath("/v1/runner/settings")),
+		// What this machine says about itself. Derived from the ONE controller address like every other
+		// runner-plane URL, so a deployment that moves its plane moves this with it.
+		derivedEnv("PALAI_LOGS_URL", controllerURL, joinPath("/v1/runner/logs")),
 		controllerDNS, pool
 }
 
@@ -394,7 +416,7 @@ func configFlag(args []string) string {
 // WHAT IS ABSENT IS THE CONTRACT. No pool, no posture, no capacity, no runner id, no DNS name, no four
 // derived URLs, no workspace root, no concurrency. Those are the admin plane's or the binary's, and a
 // value added here is a value an operator has to set on every machine in the fleet.
-func installedBootstrap(installed *device.Installation) (bootstrap runner.BootstrapConfig, tokenFile, sessionURL, renewURL, settingsURL, controllerDNS string, controllerCAs *x509.CertPool) {
+func installedBootstrap(installed *device.Installation) (bootstrap runner.BootstrapConfig, tokenFile, sessionURL, renewURL, settingsURL, logsURL, controllerDNS string, controllerCAs *x509.CertPool) {
 	key, err := installed.EnrollmentKey()
 	if err != nil {
 		log.Fatalf("read enrolment key: %v", err)
@@ -440,6 +462,7 @@ func installedBootstrap(installed *device.Installation) (bootstrap runner.Bootst
 		outboundSessionURL(base),
 		base + "/v1/runner/renew",
 		base + "/v1/runner/settings",
+		base + "/v1/runner/logs",
 		controllerDNS, installed.CAs
 }
 
@@ -763,4 +786,30 @@ func envDurationDefault(name string, def time.Duration) time.Duration {
 		return d
 	}
 	return def
+}
+
+// shipLogsInterval is how often a machine's lines reach the plane. Frequent enough that an operator
+// watching a failing enrolment sees it happen, rare enough that a hundred idle machines are not a load.
+const shipLogsInterval = 15 * time.Second
+
+// shipLogs drains the buffer on a timer for the life of the agent.
+func shipLogs(ctx context.Context, buffer *runner.LogBuffer, url string, cas *x509.CertPool, dns string, current func() runner.Identity) {
+	ticker := time.NewTicker(shipLogsInterval)
+	defer ticker.Stop()
+	config := runner.LogShipConfig{LogsURL: url, ControllerCAs: cas, ControllerDNS: dns, Now: time.Now}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			lines := buffer.Take(runner.MaxLogBatch)
+			if len(lines) == 0 {
+				continue
+			}
+			// A failure is dropped ON PURPOSE and NOT logged: logging here would write a line into the
+			// buffer that just failed to ship, which is a loop that fills the buffer with reports of its
+			// own inability to empty it.
+			_ = runner.ShipLogs(ctx, current(), lines, config)
+		}
+	}
 }

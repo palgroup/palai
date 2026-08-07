@@ -500,7 +500,7 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 	// going through systemOnly is one that test catches rather than one a reviewer has to remember to
 	// check by eye.
 	if cfg.runners != nil {
-		rh := &runnerHandler{runners: cfg.runners, desired: cfg.desired, occupancies: cfg.occupancies}
+		rh := &runnerHandler{runners: cfg.runners, runnerLogs: cfg.runnerLogs, desired: cfg.desired, occupancies: cfg.occupancies}
 		mux.HandleFunc("GET /v1/runners", systemOnly(rh.listRunners))
 		mux.HandleFunc("GET /v1/runners/{runner_id}", systemOnly(rh.getRunner))
 		// The machine-detail history. Registered ONLY when a spine backs it: a route that always answered
@@ -556,6 +556,9 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 			mux.HandleFunc("GET /v1/runners/{runner_id}/desired", systemOnly(rh.desiredForScope(planeRunnerMachine, "runner_id")))
 		}
 		mux.HandleFunc("POST /v1/runner-pool-keys/{key_id}/revoke", systemOnly(rh.revokePoolKey))
+		// WHAT THE MACHINE SAYS ABOUT ITSELF. Registered whenever a reader is wired; the handler answers
+		// 501 when it is not, because an empty list and an uncollected log are different facts.
+		mux.HandleFunc("GET /v1/runners/{runner_id}/logs", systemOnly(rh.listRunnerLogs))
 		// THE MACHINE LIFECYCLE (E24 T5), and the reason it is here is §3.6 D15: `Revoke()` was SAN-011's
 		// hard stop for a compromised runner, implemented, tested, registered in the UAT catalogue, and
 		// reachable from nothing at all — the same shape as E19 T9's CreateSlackConnection and E23's

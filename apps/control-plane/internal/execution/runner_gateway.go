@@ -93,6 +93,10 @@ type PoolEnrollment interface {
 type RunnerGateway struct {
 	issuer CertIssuer
 	tokens EnrollmentTokens
+	// logs takes what a machine says about itself. Nil = this deployment keeps no fleet log, and the
+	// route says so with a 501 rather than accepting and discarding: an agent that believes its lines
+	// landed is an operator who believes the machine said nothing.
+	logs RunnerLogSink
 	// poolKeys is the FIRST link of the credential chain (E24 T3): a pool key names the pool it admits
 	// into, so a machine presenting one lands in that pool and is recorded against that key. Nil leaves
 	// the chain exactly as it was — file token only, default pool — which is every deployment built
@@ -744,6 +748,10 @@ func (g *RunnerGateway) Routes() http.Handler {
 	mux.HandleFunc("/v1/runner/renew", g.handleRenew)
 	mux.HandleFunc("/v1/runner/settings", g.handleSettings)
 	mux.HandleFunc("/v1/runner/connect", g.handleConnect)
+	// What the machine says about itself. Registered unconditionally; the handler refuses with 501 when
+	// this deployment keeps no fleet log, so an agent learns the difference between "not collected" and
+	// "accepted and lost".
+	mux.HandleFunc("/v1/runner/logs", g.handleLogs)
 	return mux
 }
 
@@ -2450,3 +2458,7 @@ func bearer(header string) (string, bool) {
 	}
 	return header[len(prefix):], true
 }
+
+// SetRunnerLogs wires the fleet log sink. A setter rather than a constructor argument for the reason
+// every other optional organ on this gateway is one: a deployment without it behaves exactly as it did.
+func (g *RunnerGateway) SetRunnerLogs(sink RunnerLogSink) { g.logs = sink }

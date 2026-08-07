@@ -54,14 +54,16 @@ type routerConfig struct {
 	sessionAccounts SessionAccountReleaser
 	// sessionWorkspaces resolves a session's workspace directory for the diff route. Nil = not served.
 	sessionWorkspaces SessionWorkspaces
-	edge              EdgeLimits
-	secrets           SecretRefAPI
-	usage             UsageAPI
-	modelRoutes       ModelRouteAPI
-	knowledge         KnowledgeAPI
-	metrics           http.Handler
-	a2a               http.Handler // the authed A2A 1.0 surface (E17 T2)
-	a2aCard           http.Handler // the unauthenticated public Agent Card handler
+	// runnerLogs reads a machine's own log lines. Nil = the route is not served.
+	runnerLogs  RunnerLogReader
+	edge        EdgeLimits
+	secrets     SecretRefAPI
+	usage       UsageAPI
+	modelRoutes ModelRouteAPI
+	knowledge   KnowledgeAPI
+	metrics     http.Handler
+	a2a         http.Handler // the authed A2A 1.0 surface (E17 T2)
+	a2aCard     http.Handler // the unauthenticated public Agent Card handler
 	// queues is the queue-binding admin surface (E19 T6); nil ⇒ routes unmounted, and discovery must not
 	// advertise `queues` at all.
 	queues QueueConnectionAPI
@@ -114,6 +116,11 @@ func WithSessionAccounts(a SessionAccountReleaser) RouterOption {
 // WithSessionWorkspaces mounts GET /v1/sessions/{id}/diff. Absent, the route is not served at all
 // rather than answering "no workspace" everywhere: a deployment with no workspace store cannot tell the
 // two apart, and a 404 that means "not configured" is the kind of answer a caller debugs for an hour.
+// WithRunnerLogs mounts GET /v1/runners/{id}/logs — what the machines say about themselves.
+func WithRunnerLogs(r RunnerLogReader) RouterOption {
+	return func(c *routerConfig) { c.runnerLogs = r }
+}
+
 func WithSessionWorkspaces(ws SessionWorkspaces) RouterOption {
 	return func(c *routerConfig) { c.sessionWorkspaces = ws }
 }

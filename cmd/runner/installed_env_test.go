@@ -115,9 +115,9 @@ func installedFixture(t *testing.T) *device.Installation {
 
 // answers collects every value the installed path hands back, as one string to scan.
 func answers(installed *device.Installation) string {
-	bootstrap, tokenFile, sessionURL, renewURL, settingsURL, controllerDNS, _ := loadConfig(installed)
+	bootstrap, tokenFile, sessionURL, renewURL, settingsURL, logsURL, controllerDNS, _ := loadConfig(installed)
 	return strings.Join([]string{
-		bootstrap.RunnerID, bootstrap.RunnerDNS, bootstrap.EnrollmentToken, bootstrap.EnrollmentURL,
+		bootstrap.RunnerID, bootstrap.RunnerDNS, bootstrap.EnrollmentToken, bootstrap.EnrollmentURL, logsURL,
 		bootstrap.ControllerDNS, bootstrap.PoolID, bootstrap.Posture,
 		tokenFile, sessionURL, renewURL, settingsURL, controllerDNS,
 		workspaceRoot(installed), settingsInterval(installed).String(),
@@ -156,7 +156,7 @@ func TestAnInstalledAgentReadsNOTHINGFromItsEnvironment(t *testing.T) {
 			"that yes exists so a control plane ALONE cannot mount an arbitrary host path, and on a device it " +
 			"could only be typed as an environment variable on the box")
 	}
-	if _, _, _, _, _, _, pool := loadConfig(installed); pool != nil && installed.CAs == nil {
+	if _, _, _, _, _, _, _, pool := loadConfig(installed); pool != nil && installed.CAs == nil {
 		t.Error("an installed device built a CA pool from the environment: the trust anchor is the one its " +
 			"config named, or the host's root store")
 	}
@@ -171,7 +171,7 @@ func TestTheInstalledPathAnswersFromTheInstallationRatherThanADefault(t *testing
 	if got := workspaceRoot(installed); got != installed.Paths.WorkspaceRoot {
 		t.Errorf("workspaceRoot = %q, want the installation's own %q", got, installed.Paths.WorkspaceRoot)
 	}
-	_, _, sessionURL, _, _, controllerDNS, _ := loadConfig(installed)
+	_, _, sessionURL, _, _, _, controllerDNS, _ := loadConfig(installed)
 	if !strings.HasPrefix(sessionURL, "wss://controller.fixture.internal:8443") {
 		t.Errorf("session URL = %q, want it derived from the installation's controller_url", sessionURL)
 	}

@@ -253,6 +253,18 @@ func main() {
 	// The diff a human approves against. It reads the session's workspace directory under the caller's
 	// own project scope, so the route is as tenant-safe as every other session read.
 	routerOpts = append(routerOpts, api.WithSessionWorkspaces(repo.Spine()))
+	// WHAT THE MACHINES SAY ABOUT THEMSELVES. One store, two ends: the gateway takes the shipments and
+	// the admin plane reads them back. Wired unconditionally because the spine is always there — a
+	// deployment that wanted no fleet log would drop this line, and both ends answer 501 rather than
+	// pretending.
+	runnerLogs := runnerLogBridge{store: fleet.NewRunnerLogs(repo.Spine().Pool())}
+	routerOpts = append(routerOpts, api.WithRunnerLogs(runnerLogs))
+	// The intake end. A gateway is nil when this deployment serves no runner plane, and then there is
+	// nothing to collect from — the read route still answers, with an empty list, which is the honest
+	// shape for a plane that has no machines rather than no collector.
+	if gateway != nil {
+		gateway.SetRunnerLogs(runnerLogs)
+	}
 	if secretStore != nil {
 		routerOpts = append(routerOpts, api.WithSecretRefs(secretStore))
 		// THE VERIFY ACTION'S REAL WORK (E29), on the SAME condition and the SAME store as the secret-ref

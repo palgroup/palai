@@ -12,7 +12,7 @@ import (
 // per-migration source the boot runner iterates (E15 T1). It also pins the chain head, so the
 // preflight/journal invariant is anchored.
 //
-// THE CHAIN IS ELEVEN LINKS AND IT WAS SIXTY-SEVEN. It was squashed to a two-file baseline on 2026-08-04;
+// THE CHAIN IS TWELVE LINKS AND IT WAS SIXTY-SEVEN. It was squashed to a two-file baseline on 2026-08-04;
 // 000003_lease_occupancy (Faz A.4 T1) was the first ordinary forward migration written against it, then
 // 000004_response_metadata, 000005_capacity_declaration (Faz A.4 T5),
 // 000006_project_scoped_secrets_and_environments (Faz A.6 T0),
@@ -70,12 +70,12 @@ func TestOrderedMigrationsIsContiguousVersionOrder(t *testing.T) {
 	}
 
 	head := migrations[len(migrations)-1]
-	if head.Version != 11 || head.Name != "usage_ledger_names_the_machine" {
-		t.Fatalf("chain head = %06d_%s, want 000011_usage_ledger_names_the_machine", head.Version, head.Name)
+	if head.Version != 12 || head.Name != "runner_logs" {
+		t.Fatalf("chain head = %06d_%s, want 000012_runner_logs", head.Version, head.Name)
 	}
 	penultimate := migrations[len(migrations)-2]
-	if penultimate.Version != 10 || penultimate.Name != "drop_vestigial_allowed_approver" {
-		t.Fatalf("penultimate migration = %06d_%s, want 000010_drop_vestigial_allowed_approver", penultimate.Version, penultimate.Name)
+	if penultimate.Version != 11 || penultimate.Name != "usage_ledger_names_the_machine" {
+		t.Fatalf("penultimate migration = %06d_%s, want 000011_usage_ledger_names_the_machine", penultimate.Version, penultimate.Name)
 	}
 
 	// The concatenated MigrationUp() must carry exactly the same forward SQL the per-migration path

@@ -304,6 +304,10 @@ type RunnerRegistryAPI interface {
 
 type runnerHandler struct {
 	runners RunnerRegistryAPI
+	// runnerLogs reads what a machine has said about itself. Nil = this deployment keeps no fleet log,
+	// and the route answers 501 rather than an empty list: "collected nothing" and "collects nothing"
+	// are different facts and an operator debugging a silent machine has to tell them apart.
+	runnerLogs RunnerLogReader
 	// desired serves the per-pool and per-machine desired documents. Nil on a deployment with no durable
 	// spine, in which case the two read routes are not registered at all — an absent route is a better
 	// answer than one that always reports "no document", which would be indistinguishable from a

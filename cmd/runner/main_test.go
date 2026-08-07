@@ -154,7 +154,7 @@ func TestOneAddressDerivesWhatFourVariablesUsedToCarry(t *testing.T) {
 		for _, name := range []string{"PALAI_SESSION_URL", "PALAI_ENROLLMENT_URL", "PALAI_RENEW_URL", "PALAI_SETTINGS_URL", "PALAI_CONTROLLER_CA"} {
 			t.Setenv(name, "")
 		}
-		_, _, sessionURL, _, _, _, _ := loadConfig(nil)
+		_, _, sessionURL, _, _, _, _, _ := loadConfig(nil)
 		if !strings.HasPrefix(sessionURL, "wss://") {
 			t.Fatalf("loadConfig derived session URL %q; the session refuses anything that is not wss, so this machine would retry forever while looking healthy in Fleet", sessionURL)
 		}
