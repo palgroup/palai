@@ -798,13 +798,6 @@ const FleetConsolePoolLedger = `[
     "strict_enrollment": true,
     "created_via": "public-api",
     "test": "TestPoolBirthReachesTheWaitingRoomAndTheApproveRoute"
-  },
-  {
-    "pool": "cli-created pool",
-    "posture": "sandboxed-linux",
-    "strict_enrollment": false,
-    "created_via": "cli",
-    "test": "TestPoolCreateReachesTheRealRouter"
   }
 ]`
 

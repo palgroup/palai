@@ -513,6 +513,13 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 			// question a tenant on a shared fleet can be answered at all.
 			mux.HandleFunc("GET /v1/sessions/{session_id}/occupancies", rh.listSessionOccupancies)
 		}
+		if cfg.sessionWorkspaces != nil {
+			// The human who has to approve the agent's work needs to SEE it, and this is the only route
+			// that shows it. It is a tenant-scoped read: the workspace is resolved under the caller's own
+			// project, so a guessed session id reaches nothing.
+			dh := &sessionDiffHandler{workspaces: cfg.sessionWorkspaces}
+			mux.HandleFunc("GET /v1/sessions/{session_id}/diff", dh.sessionDiff)
+		}
 		// The pools those machines are in (E24 T2), and THE BIRTH PATH THAT WAS MISSING (E28 T1).
 		//
 		// THE COMMENT THAT STOOD HERE SAID "Read-only: creating and deleting a pool is T5/T6's", and the same

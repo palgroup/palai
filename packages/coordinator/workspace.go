@@ -458,3 +458,28 @@ func (s *Store) WorkspaceHasActiveLease(ctx context.Context, tenant Tenant, work
 	}
 	return held, nil
 }
+
+// WorkspaceHostPath resolves the directory a session's work lives in, for a reader that shows it
+// rather than changes it — today `GET /v1/sessions/{id}/diff`.
+//
+// IT SCOPES TO THE CALLER'S PROJECT AND NOT TO THE SYSTEM. Every other reader in this file that widens
+// to the system scope does so because it is the supervisor acting on its own allocations; this one
+// answers a customer's question about their own session, so a guessed session id must reach nothing.
+// The project is passed rather than derived for the same reason: the value is the API's verified scope,
+// not something this layer could infer.
+func (s *Store) WorkspaceHostPath(ctx context.Context, project, sessionID string) (string, error) {
+	var hostPath string
+	err := s.pool.QueryRow(storage.WithTenant(ctx, project), storage.Query("SessionWorkspaceHostPath"), sessionID, project).
+		Scan(&hostPath)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", fmt.Errorf("workspace host path for session %s: %w", sessionID, ErrNoWorkspace)
+	}
+	if err != nil {
+		return "", fmt.Errorf("workspace host path for session %s: %w", sessionID, err)
+	}
+	return hostPath, nil
+}
+
+// ErrNoWorkspace reports a session that has never had a workspace realised — created and never run, or
+// not yet placed on a machine. It is distinct from an empty diff and callers must keep them apart.
+var ErrNoWorkspace = errors.New("session has no workspace")

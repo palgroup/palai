@@ -56,8 +56,8 @@ fallback to "the nearest free machine". Structurally, each pool is its own queue
 cannot be reached by a run in pool B at all.
 
 ```bash
-palai pool create --name mac-pool --posture unsandboxed-host --os darwin --arch arm64
-palai pool list                    # every pool: posture, shape, strict mode, queue depth
+curl -X POST "$PALAI_BASE_URL/v1/runner-pools" -H "Authorization: Bearer $PALAI_API_KEY" -H 'Content-Type: application/json' -d '{"name":"<name>"}'
+curl "$PALAI_BASE_URL/v1/runner-pools" -H "Authorization: Bearer $PALAI_API_KEY"
 curl -sS "$PALAI_BASE_URL/v1/runners" -H "Authorization: Bearer $PALAI_API_KEY"   # every machine: pool, state, last seen
 ```
 
@@ -65,7 +65,7 @@ curl -sS "$PALAI_BASE_URL/v1/runners" -H "Authorization: Bearer $PALAI_API_KEY" 
 posture when it enrols, so changing a populated pool's posture would retroactively change what the machines
 already in it *are*. If you need a different posture, create a different pool.
 
-`palai pool list` also prints **`waiting`** — how many runs are queued for that pool with no machine free to
+`curl "$PALAI_BASE_URL/v1/runner-pools" -H "Authorization: Bearer $PALAI_API_KEY"` also prints **`waiting`** — how many runs are queued for that pool with no machine free to
 take them. It is the answer to *"why is nothing running in my Mac pool"*, and until now there was none.
 `waiting` is **absent** rather than `0` when the control plane has no runner listener bound: *"nobody could
 ask"* and *"nothing is waiting"* are different answers.
@@ -93,19 +93,15 @@ Resolution order, highest first: the run's own recorded pool (so a resumed run r
 posture) → the agent revision's binding → the project policy → the tenant's own pool named `default`.
 The second of those has nowhere to read from yet (`FLT-P3` in [known-gaps-1.0.md](known-gaps-1.0.md)).
 
-**Creating a pool IS a public route** — `POST /v1/runner-pools`, which `palai pool create` fronts. This
+**Creating a pool IS a public route** — `POST /v1/runner-pools`, which `curl -X POST "$PALAI_BASE_URL/v1/runner-pools" -H "Authorization: Bearer $PALAI_API_KEY" -H 'Content-Type: application/json' -d '{"name":"<name>"}'` fronts. This
 paragraph used to say the opposite, and it was true: until E28 the API only read pools, a tenant got exactly
 one `default` pool at birth, and a second one meant raw SQL on the control-plane host. Two code comments had
 handed the work to "T5/T6" and both of those shipped without it.
 
-**Both spellings of the create work, and one of them stopped being broken in this epic.** `palai pool create`
-and `palai admin pool create` reach the same place — `palai admin <resource>` hands the resource straight to
-the same dispatcher — so an owner copying either from an older document gets a working command. What is
-*still* wrong is a third spelling that appeared in E24's own handover block: `palai admin pool key create`.
-There is no `key` subcommand under `pool`, and as of 2026-08-07 there is no `poolkey` verb either: the enrolment key is minted with `POST /v1/runner-pools/<pool_id>/keys`, which is what that verb was fronting.
-`TestE24HandoverBlockStillDoesNotWork` asserts both halves, and it was itself corrected by the E28 exit gate,
-which found it driving a resource string the binary never produces — a guard passing on an input that cannot
-occur, which is the same defect it exists to catch, one layer down.
+**Both spellings of the create work, and one of them stopped being broken in this epic.** `curl -X POST "$PALAI_BASE_URL/v1/runner-pools" -H "Authorization: Bearer $PALAI_API_KEY" -H 'Content-Type: application/json' -d '{"name":"<name>"}'`
+The fleet's resources are served by `/v1` and by the panel. The CLI's `pool`, `admin` and
+`apikey` verbs were deleted on 2026-08-07 — two clients for one write is what the
+two-component split exists to end, and the API is the one that stayed.
 
 **Deleting a pool is still not a route**, deliberately: `runner_pool_keys` cascades from `runner_pools`, so
 deleting a pool would silently delete its enrolment keys, and what should become of the machines whose
@@ -163,9 +159,9 @@ issuing raw SQL. The approve route below therefore decided a state no operator c
 reach it now:
 
 ```bash
-palai pool create --name mac-pool --posture unsandboxed-host --strict   # born with the waiting room open
-palai pool set-strict pool_…  --strict                                  # open an existing pool's
-palai pool set-strict pool_…                                            # and close it again
+curl -X POST "$PALAI_BASE_URL/v1/runner-pools" -H "Authorization: Bearer $PALAI_API_KEY" -H 'Content-Type: application/json' -d '{"name":"<name>"}'
+curl -X POST "$PALAI_BASE_URL/v1/runner-pools/<pool_id>/strict-enrollment" -H "Authorization: Bearer $PALAI_API_KEY" -d '{"strict":true}'
+curl -X POST "$PALAI_BASE_URL/v1/runner-pools/<pool_id>/strict-enrollment" -H "Authorization: Bearer $PALAI_API_KEY" -d '{"strict":true}'
 ```
 
 **Or from the console.** `/fleet` (§3c of [`console.md`](console.md)) creates the pool with the same posture
@@ -231,7 +227,7 @@ control here that is checked against something the machine *measured about itsel
 something it declared.
 
 ```bash
-palai pool create --name mac-dense --posture unsandboxed-host --isolation accounts
+curl -X POST "$PALAI_BASE_URL/v1/runner-pools" -H "Authorization: Bearer $PALAI_API_KEY" -H 'Content-Type: application/json' -d '{"name":"<name>"}'
 ```
 
 A machine enrolling into that pool sends the modes it measured. If `accounts` is not among them — no
@@ -260,7 +256,7 @@ grep -n 'isolation_mode' storage/queries/runners.sql | grep -v ':--' | grep -icE
 # -> 1 (2026-08-07). It was 0, and a 0 here means the pool below can be created but never asked for.
 ```
 
-**A blank is a real answer and it is rendered rather than omitted.** `palai pool list` prints
+**A blank is a real answer and it is rendered rather than omitted.** `curl "$PALAI_BASE_URL/v1/runner-pools" -H "Authorization: Bearer $PALAI_API_KEY"` prints
 `isolation_mode` for every pool including the empty one, because "this pool admits any machine" is the
 fact an operator most needs to see on a **shared** pool and the least likely to go looking for.
 
@@ -324,7 +320,7 @@ it unset is a supported posture; a run parked in a pool that will never have a m
 
 ```
   fleet        2 pool(s), 1 active runner(s), 1 pending approval — a PENDING machine holds a
-               certificate and takes NO work until a human admits it: `palai admin runner approve <id>`
+               certificate and takes NO work until a human admits it: `curl -X POST "$PALAI_BASE_URL/v1/runners/<runner_id>/approve" -H "Authorization: Bearer $PALAI_API_KEY"`
 ```
 
 It is on the report unconditionally, including when there is nothing to say, because the alternative is a
@@ -355,6 +351,6 @@ with the measurement that produced it. The three worth reading before you rely o
   no attestation on this wire.
 
 And one that used to cost you time and no longer does: **`FLT-P14`** is **closed**. How many runs are queued
-for a pool with no free machine is the `waiting` field on `palai pool list` / `GET /v1/runner-pools` (§1). The
+for a pool with no free machine is the `waiting` field on `curl "$PALAI_BASE_URL/v1/runner-pools" -H "Authorization: Bearer $PALAI_API_KEY"` / `GET /v1/runner-pools` (§1). The
 count had existed inside the gateway since E24 and no surface read it, so the question §5 tells you to ask —
 *"why is nothing running in my Mac pool"* — had no answer you could query.

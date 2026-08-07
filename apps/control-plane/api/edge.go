@@ -52,14 +52,16 @@ type routerConfig struct {
 	occupancies MachineOccupancyAPI
 	// sessionAccounts releases a session's uid when it closes. Nil mints and releases nothing.
 	sessionAccounts SessionAccountReleaser
-	edge            EdgeLimits
-	secrets         SecretRefAPI
-	usage           UsageAPI
-	modelRoutes     ModelRouteAPI
-	knowledge       KnowledgeAPI
-	metrics         http.Handler
-	a2a             http.Handler // the authed A2A 1.0 surface (E17 T2)
-	a2aCard         http.Handler // the unauthenticated public Agent Card handler
+	// sessionWorkspaces resolves a session's workspace directory for the diff route. Nil = not served.
+	sessionWorkspaces SessionWorkspaces
+	edge              EdgeLimits
+	secrets           SecretRefAPI
+	usage             UsageAPI
+	modelRoutes       ModelRouteAPI
+	knowledge         KnowledgeAPI
+	metrics           http.Handler
+	a2a               http.Handler // the authed A2A 1.0 surface (E17 T2)
+	a2aCard           http.Handler // the unauthenticated public Agent Card handler
 	// queues is the queue-binding admin surface (E19 T6); nil ⇒ routes unmounted, and discovery must not
 	// advertise `queues` at all.
 	queues QueueConnectionAPI
@@ -107,6 +109,13 @@ type routerConfig struct {
 // which is exactly today's behaviour.
 func WithSessionAccounts(a SessionAccountReleaser) RouterOption {
 	return func(c *routerConfig) { c.sessionAccounts = a }
+}
+
+// WithSessionWorkspaces mounts GET /v1/sessions/{id}/diff. Absent, the route is not served at all
+// rather than answering "no workspace" everywhere: a deployment with no workspace store cannot tell the
+// two apart, and a 404 that means "not configured" is the kind of answer a caller debugs for an hour.
+func WithSessionWorkspaces(ws SessionWorkspaces) RouterOption {
+	return func(c *routerConfig) { c.sessionWorkspaces = ws }
 }
 
 func WithDesiredConfig(desired DesiredConfigAPI) RouterOption {

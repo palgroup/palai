@@ -19,10 +19,14 @@ proof:
   # "one more parameter" is only as strong as the number it starts from), and the sibling above still pins
   # the three LITERALS, which A.2 did not touch.
   - apps/control-plane/internal/fleet/seed_test.go:TestTheSeedStatementTakesExactlyTwoParameters
-  - cmd/cli/internal/admin/pool_test.go:TestPoolCreateReachesTheRealRouter
-  - cmd/cli/internal/admin/pool_test.go:TestPoolSetStrictReachesTheRealRouter
-  - cmd/cli/internal/admin/pool_test.go:TestE24HandoverBlockStillDoesNotWork
-  - cmd/cli/internal/admin/pool_test.go:TestPoolNeedsTheProvisionCapability
-  - cmd/cli/internal/admin/pool_test.go:TestPoolCreateWithNoProjectScopeCreatesAFreePool
+  # WITHDRAWN 2026-08-07 — the CLI's pool verbs were deleted: `/v1/runner-pools` and the
+  # panel already served the same writes, so cmd/cli/internal/admin went with them. The
+  # CLAIM is unchanged and is proven by the API's own tests; what is gone is the second
+  # client that proved it a second way. The case TEXT is untouched, per TLM-003's pattern.
+  # - cmd/cli/internal/admin/pool_test.go:TestPoolCreateReachesTheRealRouter
+  # - cmd/cli/internal/admin/pool_test.go:TestPoolSetStrictReachesTheRealRouter
+  # - cmd/cli/internal/admin/pool_test.go:TestE24HandoverBlockStillDoesNotWork
+  # - cmd/cli/internal/admin/pool_test.go:TestPoolNeedsTheProvisionCapability
+  # - cmd/cli/internal/admin/pool_test.go:TestPoolCreateWithNoProjectScopeCreatesAFreePool
   - tests/uat/fleet/reachable_test.go:TestEveryE24ExportedSurfaceHasAProductionCaller
   - tests/security/tenancy/tenancy_test.go:TestForeignPoolWriteAndUpdateAreRejected

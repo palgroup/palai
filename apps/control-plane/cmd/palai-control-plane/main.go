@@ -250,6 +250,9 @@ func main() {
 	// that did not says so at the first Acquire instead of silently running as the operator's uid.
 	sessionAccounts := execution.NewDaemonSessionAccounts(macagent.DefaultSocketPath)
 	routerOpts = append(routerOpts, api.WithSessionAccounts(sessionAccounts))
+	// The diff a human approves against. It reads the session's workspace directory under the caller's
+	// own project scope, so the route is as tenant-safe as every other session read.
+	routerOpts = append(routerOpts, api.WithSessionWorkspaces(repo.Spine()))
 	if secretStore != nil {
 		routerOpts = append(routerOpts, api.WithSecretRefs(secretStore))
 		// THE VERIFY ACTION'S REAL WORK (E29), on the SAME condition and the SAME store as the secret-ref

@@ -25,7 +25,7 @@ the console. Each step names the screen and the page that goes deeper.
    which writes `PALAI_CONSOLE_PASSWORD_HASH` into `apps/web-console/.env.local` for you (§2). **Without it
    the console serves nothing** — not a read, not a write, not a sign-in. Restart the console after setting
    it: the hash is read from the process environment.
-2. **Give the console a narrow key.** `palai apikey create --project <prj_id> --scope provision --scope
+2. **Give the console a narrow key.** `curl -X POST "$PALAI_BASE_URL/v1/api-keys" -H "Authorization: Bearer $PALAI_API_KEY" -d '{"project_id":"<prj_id>"}'
    approve` (§3), or mint it from `/policy` (§3b) — the screen offers the two capabilities by name and says
    what each opens. Skipping this leaves the console holding a key with EVERY capability; the door is shut,
    the key is not narrow, and `CON-P2` says how far that goes.
@@ -59,7 +59,7 @@ the console. Each step names the screen and the page that goes deeper.
 10. **Set the project's policy** at `/policy` (§3b) — the approver list that decides who may answer a gate,
    the tool ceiling, and the runner pool (step 9) the project's runs are placed in. **This form writes the
    WHOLE policy document**, which is what the API does; see §3b before you use it, because the same is true
-   of `palai admin project set-policy` and there the read-first step is yours.
+   of `curl -X PATCH "$PALAI_BASE_URL/v1/projects/<prj_id>" -H "Authorization: Bearer $PALAI_API_KEY" -d '{"config_policy":{…}}'` and there the read-first step is yours.
 11. **Run it** at `/runs`, pinned to that revision. The run's shell commands now see the environment's keys.
 12. **Answer its gates** at `/approvals` (§4) — and, if you took a pool strict in step 9, **admit its
    machines** at `/fleet` (§3c). **Read what it did** at `/history`.
@@ -225,7 +225,7 @@ an empty array on a real stack.
 Mint a narrower one:
 
 ```sh
-palai apikey create --project <prj_id> --scope provision --scope approve
+curl -X POST "$PALAI_BASE_URL/v1/api-keys" -H "Authorization: Bearer $PALAI_API_KEY" -d '{"project_id":"<prj_id>"}'
 ```
 
 `--scope` repeats; the value is printed **once** and never again.
@@ -272,7 +272,7 @@ the form. Two tests hold it — one asserts the stored document after a pool-onl
 approvers, and one asserts the request BODY carried five keys, because a server that merged would let the
 first pass over a form still sending one.
 
-**The same is true of the CLI, and there nothing reads first.** `palai admin project set-policy` sends exactly
+**The same is true of the CLI, and there nothing reads first.** `curl -X PATCH "$PALAI_BASE_URL/v1/projects/<prj_id>" -H "Authorization: Bearer $PALAI_API_KEY" -d '{"config_policy":{…}}'` sends exactly
 the flags you pass, and its own help says the realistic accident is `--pool` without `--approvers`. If you use
 it, pass every flag you want to keep:
 
@@ -675,7 +675,7 @@ path in it is a route this console serves.
 - **The write path writes a DOCUMENT, never the running process** — see §3g below. Eleven of the
   thirty-five settings can be saved for this machine; twenty-four are refused, each with a stated reason.
   Nothing here edits a value the process is already holding, because nothing can.
-- **`palai config validate` still knows four things this screen cannot, and the split is structural.** Of
+- **`palai doctor --env-file production.env   # the posture audit moved into doctor when `config` left` still knows four things this screen cannot, and the split is structural.** Of
   its five checks (`cmd/cli/internal/stack/configvalidate.go`), exactly one — `dispatch_workers`, the
   `>= 1` threshold — is a property of the running process, and the screen now carries it as the blocking
   warning above. The other four read the **operator's own filesystem**: the env file's interpolation
@@ -683,7 +683,7 @@ path in it is a route this console serves.
   `production-entrypoint.sh` rejects, the edge certificate pair, and the overlay Caddyfile's path matcher.
   A `/v1` route cannot answer those and must not try — a control plane reporting what it believes is on the
   host's disk is a confident wrong answer of exactly the kind the runner-scoped omission above avoids. Run
-  `palai config validate` on the machine; the screen is what you read from anywhere else.
+  `palai doctor --env-file production.env   # the posture audit moved into doctor when `config` left` on the machine; the screen is what you read from anywhere else.
 
 ---
 
@@ -962,7 +962,7 @@ change for every project alive today. Closing both gates is two commands:
 ```sh
 # 1. A key that can ONLY decide approvals. It holds `approve` and nothing else, so it cannot rewrite the list
 #    it is checked against. The key is printed ONCE; the key ID it prints is what gate 2 names.
-palai apikey create --project prj_local --scope approve
+curl -X POST "$PALAI_BASE_URL/v1/api-keys" -H "Authorization: Bearer $PALAI_API_KEY" -d '{"project_id":"<prj_id>"}'
 
 # 2. Name that key's principal in the project's approver list. `key:<api_key_id>` is the principal form the
 #    server stamps for a bearer decision (coordinator.ApproverPrincipal).
@@ -1178,7 +1178,7 @@ lists **every** secret ref in the installation — model-provider keys and envir
 pick the one that is a Git credential. There is no screen that lists them by purpose: `ls app/` names no
 secret-ref management page, and the four things that write one are this control, `/registry` (a
 model-provider connection), `/environments` (a value under the derived name `env:<id>:<key>`) and the CLI
-(`palai secret create|list|get|rotate`). The picker is **not** a free-text box even when the list is empty —
+(`curl -X POST "$PALAI_BASE_URL/v1/secret-refs" -H "Authorization: Bearer $PALAI_API_KEY" -d '{"name":"<name>"}'`). The picker is **not** a free-text box even when the list is empty —
 a typo'd ref is accepted by a form and then fails at CLONE TIME, as far from the field that caused it as a
 refusal can get.
 

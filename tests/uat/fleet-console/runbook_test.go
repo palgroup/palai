@@ -38,101 +38,48 @@ var runbooksUnderGuard = []string{
 // copy-paste block that fails.
 var palaiCommand = regexp.MustCompile(`(?m)^palai ([a-z-]+)(?: ([a-z-]+))?(?: ([a-z-]+))?`)
 
-// cliResources is the resource set `cmd/cli/main.go` dispatches DIRECTLY (`palai <resource> …`), read from
-// the source rather than retyped — because a retyped copy is the thing this file exists to refuse.
+// cliVerbs reads the top-level verbs `dispatch` still has, straight out of main.go.
 //
-// THERE IS NO SECOND LIST FOR `palai admin <resource>`, AND MEASURING THAT IS THE POINT. main.go's `admin`
-// case hands `args[1]` straight to `admin.Run`, so the resources reachable that way are exactly the ones
-// admin.Run's own switch knows — which is why the second return here is derived from `cliSubcommands` rather
-// than parsed a second time. A guard that maintained its own copy of that set would be asserting against
-// itself, and `palai admin runner …` is reachable for the same reason `palai admin pool …` is NOT: the first
-// is a resource admin.Run dispatches and the second is not.
-func cliResources(t *testing.T) (direct, admin []string) {
+// IT PARSED THE `admin <resource> <sub>` FAMILY UNTIL 2026-08-07, in two functions and about eighty
+// lines. That family is gone — `/v1` and the panel served the same writes, so the CLI's copies were
+// deleted and the runbooks now print curl. What survived the deletion is the property that mattered all
+// along and nothing narrower: a runbook must not print a command this binary does not have.
+func cliVerbs(t *testing.T) []string {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "cmd", "cli", "main.go"))
 	if err != nil {
-		t.Fatalf("read cmd/cli/main.go: %v", err)
+		t.Fatalf("read main.go: %v", err)
 	}
-	for _, line := range strings.Split(string(raw), "\n") {
-		trimmed := strings.TrimSpace(line)
-		if !strings.HasPrefix(trimmed, `case "`) {
-			continue
-		}
-		names := regexp.MustCompile(`"([a-z-]+)"`).FindAllStringSubmatch(trimmed, -1)
-		set := make([]string, 0, len(names))
-		for _, n := range names {
-			set = append(set, n[1])
-		}
-		// TWO ANCHORS, AND THEY MOVED ON 2026-08-07 WHEN `project` LEFT THE CLI. The line is identified by
-		// members rather than by position, so a reordered switch still resolves; what it cannot survive is
-		// an anchor that is DELETED, which is what `project` became. `poolkey` and `model` are the two now,
-		// and neither appears on any other `case "` line in main.go — measured, not assumed. `poolkey` was
-		// the first anchor and it lasted one slice: T1 deletes it too. `pool` and `model` survive T1 whole,
-		// which is the property an anchor needs — a member that outlives the change it is anchoring.
-		if slices.Contains(set, "pool") && slices.Contains(set, "model") {
-			direct = set
-		}
+	body := string(raw)
+	start := strings.Index(body, "func dispatch(args []string) error {")
+	if start < 0 {
+		t.Fatal("cmd/cli/main.go has no dispatch function — the composition of the CLI moved and this guard " +
+			"must follow it rather than reporting every runbook command as absent")
 	}
-	if len(direct) == 0 {
-		t.Fatal("could not read the CLI's direct resource dispatch out of cmd/cli/main.go — the switch moved, and a guard that parses nothing accepts everything")
+	end := strings.Index(body[start:], "\n}\n")
+	if end < 0 {
+		t.Fatal("could not find the end of dispatch in cmd/cli/main.go")
 	}
-	for resource := range cliSubcommands(t) {
-		admin = append(admin, resource)
+	var verbs []string
+	for _, m := range regexp.MustCompile(`case "([a-z-]+)"`).FindAllStringSubmatch(body[start:start+end], -1) {
+		verbs = append(verbs, m[1])
 	}
-	slices.Sort(admin)
-	return direct, admin
-}
-
-// cliSubcommands returns, per resource, the subcommands `admin.Run` dispatches — read from the source for the
-// same reason.
-func cliSubcommands(t *testing.T) map[string][]string {
-	t.Helper()
-	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "cmd", "cli", "internal", "admin", "admin.go"))
-	if err != nil {
-		t.Fatalf("read admin.go: %v", err)
+	// NON-VACUITY: a regexp that stopped matching would let every runbook command through. The floor is
+	// well under what dispatch has so an ordinary deletion does not touch this line, and far enough above
+	// zero that a broken parse cannot pass.
+	if len(verbs) < 5 {
+		t.Fatalf("parsed %d verb(s) out of dispatch, want at least 5 — the switch shape moved and this guard "+
+			"is now vacuous", len(verbs))
 	}
-	out := map[string][]string{}
-	current := ""
-	inSwitch := false
-	for _, line := range strings.Split(string(raw), "\n") {
-		// The dispatch switch is the one whose cases are followed by `switch sub {`.
-		if m := regexp.MustCompile(`^\tcase "([a-z-]+)":$`).FindStringSubmatch(line); m != nil {
-			current, inSwitch = m[1], false
-			continue
-		}
-		if strings.TrimSpace(line) == "switch sub {" {
-			inSwitch = true
-			continue
-		}
-		if !inSwitch || current == "" {
-			continue
-		}
-		// EVERY name on the case line, not the first: `case "cordon", "resume", "revoke", "approve":` is one
-		// line carrying four subcommands, and a first-match parse would report three of them as absent —
-		// which is exactly what this guard's own first run did.
-		if strings.HasPrefix(line, "\t\tcase \"") {
-			for _, m := range regexp.MustCompile(`"([a-z-]+)"`).FindAllStringSubmatch(line, -1) {
-				out[current] = append(out[current], m[1])
-			}
-		}
-	}
-	// 5 -> 4 ON 2026-08-07, DELIBERATELY. The floor is a parse-health check, not a count of what the CLI
-	// ought to have: `project`, `poolkey` and `runner` left in T1 because /v1 already served them, so the
-	// number a healthy parse produces went down with them. It is still a floor rather than an equality —
-	// what it must catch is a regexp that stopped matching, and four resources cannot be produced by a
-	// parse of nothing.
-	if len(out) < 4 {
-		t.Fatalf("only %d resource(s) had subcommands parsed out of admin.go — the switch shape moved, and a guard that parses nothing accepts everything", len(out))
-	}
-	return out
+	slices.Sort(verbs)
+	return verbs
 }
 
 // TestEveryPalaiCommandInAnOperatorRunbookExists is §3.6 D2's general form, and it is the closure the plan
 // asked for: "commands that WORK".
 func TestEveryPalaiCommandInAnOperatorRunbookExists(t *testing.T) {
 	root := repoRoot(t)
-	direct, admin := cliResources(t)
-	subs := cliSubcommands(t)
+	verbs := cliVerbs(t)
 
 	checked := 0
 	for _, doc := range runbooksUnderGuard {
@@ -141,87 +88,45 @@ func TestEveryPalaiCommandInAnOperatorRunbookExists(t *testing.T) {
 			t.Fatalf("read %s: %v", doc, err)
 		}
 		for _, m := range palaiCommand.FindAllStringSubmatch(string(raw), -1) {
-			first, second, third := m[1], m[2], m[3]
-			resource, sub := first, second
-			if first == "admin" {
-				resource, sub = second, third
-				if !slices.Contains(admin, resource) {
-					t.Errorf("%s prints `palai admin %s …` and `admin <resource>` dispatches only %v — this is D2's exact shape: a runbook block an operator copies, naming a resource nothing registers", doc, resource, admin)
-					continue
-				}
-			} else if !slices.Contains(direct, resource) {
-				// `palai up`, `palai local …`, `palai doctor` and friends are top-level verbs rather than
-				// admin resources, and they are out of this guard's scope rather than failures. They are
-				// recognised by NOT being in either dispatch set AND having no subcommand this file could
-				// resolve — stated so a reader knows the guard's edge rather than guessing at its silence.
-				checked++
-				continue
-			}
+			verb := m[1]
 			checked++
-			known, ok := subs[resource]
-			if !ok {
-				continue // a resource with no `switch sub` (nothing to resolve against)
-			}
-			if sub == "" {
-				t.Errorf("%s prints `palai %s` with no subcommand, and that resource dispatches on one of %v", doc, resource, known)
-				continue
-			}
-			if !slices.Contains(known, sub) {
-				t.Errorf("%s prints `palai %s %s` and the CLI dispatches only %v for that resource — a runbook step nobody ran reads exactly like one that was", doc, resource, sub, known)
+			if !slices.Contains(verbs, verb) {
+				t.Errorf("%s prints `palai %s …` and this binary dispatches only %v — an operator following "+
+					"this page types a command that does not exist", doc, verb, verbs)
 			}
 		}
 	}
 	if checked == 0 {
-		t.Fatal("this guard resolved ZERO commands — either the runbooks stopped printing them or the regexp shape moved, and either way it is reporting green over nothing")
+		t.Fatal("this guard resolved ZERO commands — either the runbooks stopped printing them or the regexp " +
+			"stopped matching, and both are the vacuity it exists to avoid")
 	}
 	t.Logf("runbook commands: %d `palai …` invocation(s) resolved across %d operator doc(s)", checked, len(runbooksUnderGuard))
 }
 
-// TestTheRunbookCommandGuardCanActuallyFail is the guard for the guard, and its first draft was WRONG in the
-// same direction the thing it guards was wrong — which is recorded rather than quietly fixed, because it is
-// the second instance of one shape in one file.
+// TestTheRunbookCommandGuardCanActuallyFail is the guard for the guard: a parse that produced nothing
+// would let every runbook command through while reporting success.
 //
-// The draft asserted that `admin pool` does NOT resolve, taking §3.6 D2's sentence at face value. It DOES:
-// main.go's `case "admin"` hands `args[1]` to admin.Run, so once E28 T1 added the `pool` resource,
-// `palai admin pool create …` began working — verified against the real binary, which builds the request and
-// fails on CONNECT. D2 was true when it was written and this epic made it false, which is exactly what
-// CLAUDE.md's fourth rule says an inherited ceiling does.
-//
-// So the negative control is the half that is still true, and it is asserted by SHAPE rather than by a
-// remembered sentence: `pool key` is not one resource, it is a resource followed by a subcommand the pool
-// switch does not have.
+// IT USED TO CONTROL ON THE `admin <resource> <sub>` FAMILY, and that family was deleted on 2026-08-07
+// when /v1 and the panel were left as the single client. The control moved with the parse: what has to
+// be shown now is that cliVerbs finds the verbs this binary really dispatches, and that a verb it does
+// NOT dispatch is reported rather than passed.
 func TestTheRunbookCommandGuardCanActuallyFail(t *testing.T) {
-	direct, admin := cliResources(t)
-	subs := cliSubcommands(t)
+	verbs := cliVerbs(t)
 
-	// The positive half FIRST, so the negatives below cannot both be true of an empty parse.
-	// ‼️ THE MEMBERS ARE `pool` AND `model`, AND THE MESSAGE SAYS WHAT THE CONDITION CHECKS. It required
-	// `pool` AND `poolkey` while saying "neither … is", which reads as an OR and describes a different
-	// failure than the one it produces — the shape this tree files under "an assertion that points at the
-	// wrong file". `poolkey` also left the CLI on 2026-08-07, so requiring it made this floor fail for the
-	// deletion rather than for a broken parse, which is exactly the confusion a floor exists to prevent.
-	for _, member := range []string{"pool", "model"} {
-		if !slices.Contains(direct, member) {
-			t.Fatalf("%q is missing from the direct dispatch set %v — the parse produced nothing usable, so every assertion here is vacuous", member, direct)
+	// The positive half FIRST, so the negative below cannot be true of an empty parse. These three are
+	// the verbs with no /v1 route at all, which is exactly why they survived the deletion — a member that
+	// outlives the change it anchors is the property an anchor needs.
+	for _, member := range []string{"backup", "restore", "doctor"} {
+		if !slices.Contains(verbs, member) {
+			t.Fatalf("%q is missing from the parsed verb set %v — the parse produced nothing usable, so the "+
+				"negative below would pass for the wrong reason", member, verbs)
 		}
 	}
-	// ‼️ THE MEMBER WAS `runner` AND ITS REASON WAS "the machine lifecycle is reached ONLY that way".
-	// That sentence stopped being true on 2026-08-07: the lifecycle verbs left the CLI (T1) and the routes
-	// under /v1/runners are the surface now — api/runner_lifecycle_test.go drives them against the real mux.
-	// A floor keyed on a member the change deletes fails FOR the change rather than for a broken parse,
-	// which is the confusion a floor exists to prevent, so it is keyed on `pool` — a resource `admin`
-	// dispatches and T1 keeps.
-	if !slices.Contains(admin, "pool") {
-		t.Fatalf("`pool` is not reachable through `palai admin <resource>` (%v) — the admin dispatcher hands args[1] straight through, so a parse that lost it would accept a runbook printing anything", admin)
-	}
-
-	// The negative: `key` is not a subcommand of `pool`, which is what makes the E24 block's second line
-	// wrong. If it ever becomes one, this guard has lost its control and the runbook needs re-reading.
-	if slices.Contains(subs["pool"], "key") {
-		t.Error("`pool key` resolves as a subcommand — the E24 handover block's second line would then be correct, and this guard has no negative control left")
-	}
-	// And a name nothing dispatches, so a parse that returned every string would be caught.
-	if slices.Contains(direct, "notaresource") || slices.Contains(admin, "notaresource") {
-		t.Error("a name that is in no dispatch switch resolved — the parser is not matching what it claims to match")
+	// And the negative: a verb that left the CLI must NOT resolve, or a runbook could keep printing it.
+	for _, gone := range []string{"admin", "apikey", "provider", "config"} {
+		if slices.Contains(verbs, gone) {
+			t.Errorf("%q is still in the parsed verb set %v — it was deleted, and a guard that still resolves "+
+				"it would let a runbook print a command this binary does not have", gone, verbs)
+		}
 	}
 }

@@ -62,7 +62,11 @@ var expectedFleetConsoleCatalog = map[string]struct {
 	proofs int
 	why    string
 }{
-	"FLC-001": {"component-real", 16, "a pool can be created with a posture and with strict enrolment switched on, a machine enrols into it over real mTLS and lands `pending`, a Dial answers ErrPoolHasNoRunner so the waiting room is structural rather than a comparison, the approve route is reached over HTTP against a machine an operator's own pool produced, and FLT-P14's counter finally has a reader — none of which any code path in this tree could do before"},
+	// 16 -> 11 on 2026-08-07: the CLI's five pool proofs were WITHDRAWN in the case file when
+	// cmd/cli/internal/admin was deleted. The claim is unchanged and the API's own tests carry it; what
+	// went is the second client that proved it twice. Lowering a count is how a claim rots, so it is
+	// written here with its reason rather than adjusted to make a red go away.
+	"FLC-001": {"component-real", 11, "a pool can be created with a posture and with strict enrolment switched on, a machine enrols into it over real mTLS and lands `pending`, a Dial answers ErrPoolHasNoRunner so the waiting room is structural rather than a comparison, the approve route is reached over HTTP against a machine an operator's own pool produced, and FLT-P14's counter finally has a reader — none of which any code path in this tree could do before"},
 	"FLC-002": {"e2e-deterministic", 13, "a policy form writes the whole document so setting a pool does not silently erase an approver list HIL-P11 measured to be permissive when empty, the REQUEST is asserted beside the stored outcome because a server that merged would pass the outcome alone, and a server-minted value is shown once in a node nothing reads back"},
 	"FLC-003": {"e2e-deterministic", 22, "the waiting room is on a screen for the first time and a machine is admitted from it, two pointer fields keep could-not-ask distinct from zero, last_seen_at states what it means and no machine carries an invented health badge, and the page names the three things a fleet screen must not let an operator assume"},
 	"FLC-004": {"e2e-deterministic", 9, "the confirmation split is a property of the SET rather than of the actions a spec named: a source sweep over every page resolves each destructive action to its confirmation and refuses both directions, so an irreversible action outside an alertdialog and a reversible one inside it are equally red"},

@@ -290,3 +290,26 @@ SELECT EXISTS (
     SELECT 1 FROM workspace_leases
     WHERE workspace_id = $1 AND state = 'active'
 );
+
+-- name: SessionWorkspaceHostPath
+-- The directory a session's work actually lives in, for a reader that wants to show it rather than
+-- change it — today that is `GET /v1/sessions/{id}/diff`.
+--
+-- IT IS THE SESSION'S FIRST WORKSPACE AND ITS HIGHEST-FENCE ALLOCATION, which are two different
+-- orderings for two different reasons. A session has one root workspace and the ORDER BY pins which
+-- row that is when a tree somehow holds more than one; the allocation is taken by max fence because a
+-- workspace that moved machines has an old allocation whose directory still exists on the machine it
+-- left, and reading THAT would show a diff from before the move as though it were current.
+--
+-- The tenant scope is the caller's: workspaces is FORCE-RLS, so this cannot reach another customer's
+-- session even when the id is guessed.
+SELECT a.host_path
+FROM workspace_allocations a
+WHERE a.workspace_id = (
+        SELECT w.id FROM workspaces w
+        WHERE w.session_id = $1 AND w.project_id = $2
+        ORDER BY w.created_at, w.id
+        LIMIT 1
+    )
+ORDER BY a.fence DESC
+LIMIT 1;

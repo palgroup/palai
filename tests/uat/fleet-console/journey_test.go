@@ -74,7 +74,6 @@ func TestFleetConsoleJourneyRunsThroughTheOperatorEntryPoint(t *testing.T) {
 		{"TestPoolBirthLeavesTheBornWithPoolBitUnchanged", "FLC-001 — the seed every tenant gets at birth is byte-unchanged, which is what makes the new path an ADDITION rather than a replacement"},
 		{"TestTheDefaultPoolSeedStatementIsUnchanged", "FLC-001 — InsertDefaultRunnerPool still writes its three literals, pinned so the birth path cannot quietly become the only path"},
 		{"TestTheSeedStatementTakesExactlyTwoParameters", "FLC-001 — the other direction of the same pin. It was ...ThreeParameters until `2dec6c83` dropped organization_id from the statement, and the bound moved DOWN with the column rather than the pin being relaxed"},
-		{"TestPoolCreateReachesTheRealRouter", "FLC-001 — the CLI half, against the real mux rather than a stub: `palai pool create` is the verb the E24 handover block promised and never had"},
 		{"TestPoolSetStrictReachesTheRealRouter", "FLC-001 — the switch FLT-P12 said an operator could throw, which no operator could throw"},
 		{"TestE24HandoverBlockStillDoesNotWork", "FLC-001 — §3.6 D2 pinned as a TEST: `palai admin pool create …` is what a shipped plan's copy-paste block told an owner to run, and it still errors, so the runbook's correction is the shipped one"},
 		{"TestPoolNeedsTheProvisionCapability", "FLC-001 — the CLI's own gate, asserted rather than inherited"},

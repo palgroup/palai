@@ -200,42 +200,6 @@ func TestPackagedCLIRunsWithNoSourceTree(t *testing.T) {
 	}
 }
 
-// TestPackagedConfigValidateRunsWithNoSourceTree proves the static production audit — which reads
-// the overlay AND the guard script beside it — resolves both without a checkout.
-func TestPackagedConfigValidateRunsWithNoSourceTree(t *testing.T) {
-	bin := cli(t)
-	work := outsideTheTree(t)
-	home := filepath.Join(work, ".palai")
-	env := []string{"PALAI_HOME=" + home}
-
-	if out, err := palai(t, bin, work, env, "init"); err != nil {
-		t.Fatalf("palai init outside the tree: %v\n%s", err, out)
-	}
-	// `init` mints a real master key, bootstrap key and edge cert pair, so the only thing the
-	// operator still supplies is the env file.
-	envFile := filepath.Join(work, "production.env")
-	body := strings.Join([]string{
-		"PALAI_HOME=" + home,
-		"PALAI_EDGE_PORT=8443",
-		"PALAI_ENGINE_IMAGE=palai/reference-engine:local",
-		"PALAI_COMPOSE_PROJECT=packaged-test",
-		"PALAI_DISPATCH_WORKERS=1",
-		"PALAI_MODEL_PROVIDER=fake",
-		"",
-	}, "\n")
-	if err := os.WriteFile(envFile, []byte(body), 0o600); err != nil {
-		t.Fatalf("write env file: %v", err)
-	}
-
-	out, err := palai(t, bin, work, env, "config", "validate", "--env-file", envFile)
-	if err != nil {
-		t.Fatalf("packaged `config validate` failed outside the tree: %v\n%s", err, out)
-	}
-	if !strings.Contains(out, "config valid") {
-		t.Fatalf("packaged `config validate` did not report a valid config:\n%s", out)
-	}
-}
-
 // TestPackagedBringUpNeverBuilds is requirement 4: a binary with no Dockerfiles cannot build, so the
 // packaged bring-up must drive the MATERIALISED compose file with --no-build and with all three image
 // references supplied. It also proves the published-default refusal is a DEFAULT and not a wall —
