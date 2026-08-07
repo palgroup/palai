@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -246,10 +247,24 @@ func main() {
 	// PER-SESSION ISOLATION IS ON WHENEVER palai-agentd IS REACHABLE, and that is the whole condition.
 	// It was `PALAI_SESSION_ACCOUNT_HELPER` naming a sudo wrapper until 2026-08-07 — an env var nobody
 	// set, pointing at a path that wanted a sudoers entry the daemon exists to make unnecessary. So the
-	// switch is the socket: a Mac that ran `sudo palai agentd install` isolates every session, and one
-	// that did not says so at the first Acquire instead of silently running as the operator's uid.
-	sessionAccounts := execution.NewDaemonSessionAccounts(macagent.DefaultSocketPath)
-	routerOpts = append(routerOpts, api.WithSessionAccounts(sessionAccounts))
+	// switch is the socket.
+	//
+	// ‼️ AND IT IS ASKED, NOT ASSUMED, WHICH IS WHAT MAKES THIS PLANE PLATFORM-AGNOSTIC. Until now the
+	// layer was constructed unconditionally, so every session on a machine without the daemon — every
+	// Linux host, and every Mac where no administrator ran the install — failed at Acquire with a dial
+	// error and never provisioned a workspace at all. `accounts` is ONE of three isolation modes this
+	// product ships (device.IsolationModes); a plane that requires it is a plane that runs on one
+	// platform. The probe below is the same single-shot question cmd/runner asks to decide whether this
+	// machine may DECLARE the mode, so the plane and the machine cannot disagree about what is offered.
+	//
+	// A DEPLOYMENT THAT SKIPS IT IS NOT A DEPLOYMENT THAT LOST A BOUNDARY IT HAD. The mode a machine
+	// declares is what a pool admits it for, so a customer who requires `accounts` never lands on a
+	// machine that answered no here. What would be dishonest is the reverse — declaring the mode and
+	// then not acquiring — and that cannot happen: both answers come from the same socket.
+	sessionAccounts := daemonSessionAccounts(ctx, macagent.DefaultSocketPath)
+	if sessionAccounts != nil {
+		routerOpts = append(routerOpts, api.WithSessionAccounts(sessionAccounts))
+	}
 	// The diff a human approves against. It reads the session's workspace directory under the caller's
 	// own project scope, so the route is as tenant-safe as every other session read.
 	routerOpts = append(routerOpts, api.WithSessionWorkspaces(repo.Spine()))
@@ -1643,6 +1658,42 @@ func startOrphanGC(ctx context.Context, repo *store.Store, supervisor *coordinat
 // much longer. There is deliberately no value that turns the sweep off, because "off" is the state this
 // stack was already in and it is the defect being fixed — 107 allocation directories and 97 uid slots held
 // by sessions that had not run anything for days (measured 2026-08-05).
+// daemonSessionAccounts answers with the per-session account layer when palai-agentd is reachable on
+// this machine, and with nil when it is not.
+//
+// IT IS SINGLE-SHOT ON PURPOSE, for the reason cmd/runner's agentdReady records: macagent's cold-boot
+// policy is twelve attempts over about thirty-seven seconds, and that window exists for the question
+// "is a machine that declares the native posture racing a boot". The question here is "did an
+// administrator install the daemon on this host", and waiting does not change that answer — it only
+// delays every control plane on a Linux box by half a minute at startup.
+//
+// THE LOG LINE IS NOT DECORATION. Which of two postures a session will run under is the single most
+// consequential thing an operator cannot see from the outside, and the failure it prevents is specific:
+// a Mac where the install was never run looks identical to one where it was, right up to the moment a
+// tenant's commands turn out to be running as the operator's own uid.
+// The socket is a PARAMETER and not a constant read inside, for two reasons that point the same way.
+// TestSessionAccountsAreOneInstanceAcrossBothHalves counts mentions of the default socket constant in
+// this composition root and requires exactly one, because two SlotAccounts dialling the same daemon
+// with different slot maps is a leak that looks exactly like working code. And a decision this
+// consequential — which of two isolation postures every session on this machine runs under — has to be
+// drivable by a test against a daemon that is there and one that is not; a constant read inside would
+// make both arms unreachable.
+func daemonSessionAccounts(ctx context.Context, socket string) *execution.SlotAccounts {
+	if runtime.GOOS != "darwin" {
+		log.Printf("session isolation: per-session accounts are a macOS mechanism and this is %s; sessions run under the machine's own posture", runtime.GOOS)
+		return nil
+	}
+	probe := macagent.NewProber(socket)
+	probe.Policy = macagent.ProbePolicy{Attempts: 1}
+	if _, err := probe.Probe(ctx); err != nil {
+		log.Printf("session isolation: palai-agentd is not answering on %s (%v), so sessions run as this process's own uid; "+
+			"install it with `sudo palai agentd install` to give every session its own account", socket, err)
+		return nil
+	}
+	log.Printf("session isolation: palai-agentd is answering on %s; every session gets its own account", socket)
+	return execution.NewDaemonSessionAccounts(socket)
+}
+
 func startIdleRelease(ctx context.Context, repo *store.Store, supervisor *coordinator.Supervisor, artStore *artifacts.Store, sessionAccounts *execution.SlotAccounts) {
 	if os.Getenv("PALAI_WORKSPACE_ROOT") == "" {
 		return // no workspaces provisioned here, so no machine to hand back
