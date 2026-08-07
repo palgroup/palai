@@ -327,7 +327,16 @@ func TestExecutorAsyncTimesOutWhenNoCallback(t *testing.T) {
 
 	in := baseInvocation(h, srv.URL)
 	in.ToolCallID = "tc_async_timeout"
-	in.TimeoutMS = 40 // no callback arrives before this
+	// 40 -> 400 ON 2026-08-07, AND IT IS NOT A FLAKE BEING PAPERED OVER. What this test observes is the
+	// ASYNC deadline firing, which can only happen after the synchronous POST has returned 202 — and on a
+	// loaded machine that POST alone takes longer than 40ms, so the invoke came back with a transport
+	// error and never reached the wait this test is about. It failed `make verify` at a five-minute load
+	// average of 18 and passed 3/3 in isolation minutes later.
+	//
+	// The ASSERTION is unchanged and so is the property: no callback arrives, ever, so the deadline still
+	// fires and ErrRemoteTimeout is still what must come back. The bound only has to be longer than the
+	// round trip it is measured against, and 400ms is that with room while costing the suite 360ms.
+	in.TimeoutMS = 400 // no callback arrives before this — ever
 	if _, err := exec.Invoke(context.Background(), in); !errors.Is(err, ErrRemoteTimeout) {
 		t.Fatalf("no-callback async invoke err = %v, want ErrRemoteTimeout", err)
 	}
