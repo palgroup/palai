@@ -291,6 +291,55 @@ else
 fi
 
 hdr "7. THE SESSION'S OWN uid"
+# ‼️ THIS SECTION USED TO COUNT ACCOUNTS AND CALL THAT THE uid. It compared `dscl . -list /Users | grep -c
+# '^palai-s'` before and after, which proves the control plane REACHED the wrapper — a real thing, and not
+# the boundary. "An account was created" and "the command ran as it" are two claims, and only the second is
+# what isolates one customer's session from another's. The count is still taken (it is what fails loudly
+# when the sudoers entry is missing), and the uid is now MEASURED through the session's own shell tool.
+uid_name=""
+uid_probe="$(api POST /v1/responses "{
+  \"session_id\": \"$session_id\",
+  $([ -n "$binding_id" ] && printf '"repository": {"binding_id": "%s"},' "$binding_id")
+  \"input\": \"Run exactly this shell command and nothing else: id -un\",
+  \"background\": true
+}")"
+uid_resp="$(printf '%s' "$uid_probe" | jq_get "['id']")"
+if [ -n "$uid_resp" ]; then
+	uid_deadline=$((SECONDS + 180))
+	while [ $SECONDS -lt $uid_deadline ]; do
+		case "$(api GET "/v1/responses/$uid_resp" | jq_get "['status']")" in
+		completed | failed | canceled | timed_out | budget_exceeded) break ;;
+		esac
+		sleep 3
+	done
+	# THE LEDGER, NOT THE PROSE. The model's summary is free to paraphrase; the tool call's own stdout is
+	# what the machine actually printed.
+	uid_name="$(api GET "/v1/responses/$uid_resp/tool-calls" | python3 -c "
+import sys,json
+try: rows=json.load(sys.stdin).get('data') or []
+except Exception: rows=[]
+for r in rows:
+    if r.get('name') != 'palai.workspace.shell':
+        continue
+    out=((r.get('result') or {}).get('stdout') or '').strip()
+    if out:
+        print(out.splitlines()[-1].strip()); break" 2>/dev/null)"
+fi
+
+if [ -z "$uid_name" ]; then
+	no "the session's commands ran as a measurable account" "the shell tool returned no stdout; without it this section is counting accounts and calling it a boundary"
+elif [ "$WITH_ACCOUNTS" -eq 1 ]; then
+	case "$uid_name" in
+	palai-s*) ok "the session's commands ran as its OWN account" "$uid_name" ;;
+	*) no "the session's commands ran as its OWN account" "ran as $uid_name — an account may exist, but the run is not inside it" ;;
+	esac
+else
+	# THE HONEST REPORT OF AN UNWIRED DEPLOYMENT, and it is a measurement rather than a skip: the uid a
+	# command runs as is a fact this smoke can take on any stack, and naming it is what stops "no accounts
+	# configured" from reading like "not checked".
+	skip "the session's commands ran as its OWN account" "ran as $uid_name — this deployment mints none, so a session's commands run as the control plane's own uid, which docs/operations/mac-sessions.md §7 is explicit is NOT a boundary"
+fi
+
 if [ "$WITH_ACCOUNTS" -eq 1 ]; then
 	after_accounts="$(dscl . -list /Users 2>/dev/null | grep -c '^palai-s' || true)"
 	if [ "${after_accounts:-0}" -gt "${before_accounts:-0}" ]; then

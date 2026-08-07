@@ -100,17 +100,21 @@ different claims, and this is the one that measures the second:
 make test-live-ios-demo ARGS=--with-accounts
 ```
 
-‼️ **AND READ WHAT THAT LEG ACTUALLY ASSERTS, BECAUSE IT IS NARROWER THAN ITS HEADING.** It counts
-`palai-s*` accounts before the run, after it and after the close: the count must RISE when a session starts
-and FALL when it ends. That proves the control plane reached the wrapper and released what it took — which
-is the half that is unreachable without step two, and the half that fails loudly when the sudoers entry is
-missing (`is PALAI_SESSION_ACCOUNT_HELPER set on the control plane?`).
+It asserts two different things, and the difference is the whole point of this section:
 
-**What it does NOT yet assert is that the session's commands RAN as that account.** "An account was created"
-and "the command ran as it" are two claims, and only the second one is the boundary. Until a leg drives
-`id -un` through the session's own shell tool and requires `palai-s`, this page claims the first. Without
-`--with-accounts` at all, the same smoke passes on a deployment with no boundary whatsoever, which is why
-the flag exists.
+- **The account exists and is released.** `palai-s*` accounts are counted before the run, after it and
+  after the close: the count must RISE when a session starts and FALL when it ends. That is the half that
+  fails loudly when step one or step two is missing — its message asks *"is PALAI_SESSION_ACCOUNT_HELPER
+  set on the control plane?"*.
+- **The commands RAN as it.** §7 drives `id -un` through the session's own shell tool and reads the answer
+  off the TOOL CALL's stdout rather than off the model's prose, then requires `palai-s…`. "An account was
+  created" and "the command ran as it" are two claims and only the second one is a boundary; before
+  2026-08-07 this smoke made only the first and this page called it the second.
+
+**Without `--with-accounts` the uid leg still runs, and still measures.** It reports the account a command
+actually ran as — on an unwired deployment that is the control plane's own login account, which §7 below is
+explicit is *not* a boundary. That is a measurement rather than a skipped line, because "no accounts
+configured" and "not checked" must not read the same.
 
 ## 4. Verify — because a boundary you did not test is a boundary you do not have
 
