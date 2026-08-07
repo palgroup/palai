@@ -51,6 +51,11 @@ type Config struct {
 	// device used its platform default and could not be told otherwise, because the env var it would
 	// have read is not inherited by a LaunchAgent.
 	WorkspaceRoot string `json:"workspace_root,omitempty"`
+	// ReleaseBaseURL is where this machine fetches a new version from when the plane names one. Empty
+	// means this machine refuses to update rather than guessing a host — an air-gapped fleet mirrors its
+	// releases, and a machine that reached out to the internet because nobody told it not to is the
+	// opposite of what an air gap is for.
+	ReleaseBaseURL string `json:"release_base_url,omitempty"`
 }
 
 // ErrUnsafePermissions is what a file readable by anyone but its owner is refused with. It is a distinct

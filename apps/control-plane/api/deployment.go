@@ -1221,14 +1221,16 @@ var unreportedSettings = map[string]string{
 	// --- THE RUNNER PLANE'S OWN, declared here on 2026-08-07 when the read→catalogue walk grew to cover it.
 	// Every one is read by a MACHINE's process and this control plane holds no copy, so a catalogue row would
 	// put a control in a panel where it would do nothing. ---
-	"PALAI_RUNNER_ID":         "runner-scoped: the id a machine calls itself before the registry has given it one. It is a bootstrap default, not a setting — the id that ends up authoritative is the one the plane MINTS at enrolment, readable on GET /v1/runners.",
-	"PALAI_RUNNER_DNS":        "runner-scoped: the SAN a machine asks its certificate to carry, defaulted from its own hostname. The certificate the plane ISSUES is what decides; this is only what was asked for.",
-	"PALAI_ENROLLMENT_URL":    "runner-scoped: the enrolment endpoint the MACHINE posts to, derived on the box from PALAI_CONTROLLER_URL and overridable there. This process serves that route; it does not read the address a machine reaches it on.",
-	"PALAI_RENEW_URL":         "runner-scoped: the certificate-renewal endpoint, same derivation and same reason as the enrolment one.",
-	"PALAI_SESSION_URL":       "runner-scoped: the session endpoint a machine dials, same derivation and same reason.",
-	"PALAI_SETTINGS_URL":      "runner-scoped: where a machine POLLS for its pool document, derived on the box from PALAI_CONTROLLER_URL.",
-	"PALAI_LOGS_URL":          "runner-scoped: where a machine SHIPS the lines it wrote, derived from the one controller address exactly as the settings URL is. It is read by cmd/runner and never by the control plane, which is the READER of those lines rather than a sender.",
-	"PALAI_SETTINGS_INTERVAL": "runner-scoped: how often a machine polls for that document. It is the MACHINE's cadence — the plane cannot make a box ask more often by writing a number here.",
+	"PALAI_RUNNER_ID":              "runner-scoped: the id a machine calls itself before the registry has given it one. It is a bootstrap default, not a setting — the id that ends up authoritative is the one the plane MINTS at enrolment, readable on GET /v1/runners.",
+	"PALAI_RUNNER_DNS":             "runner-scoped: the SAN a machine asks its certificate to carry, defaulted from its own hostname. The certificate the plane ISSUES is what decides; this is only what was asked for.",
+	"PALAI_ENROLLMENT_URL":         "runner-scoped: the enrolment endpoint the MACHINE posts to, derived on the box from PALAI_CONTROLLER_URL and overridable there. This process serves that route; it does not read the address a machine reaches it on.",
+	"PALAI_RENEW_URL":              "runner-scoped: the certificate-renewal endpoint, same derivation and same reason as the enrolment one.",
+	"PALAI_SESSION_URL":            "runner-scoped: the session endpoint a machine dials, same derivation and same reason.",
+	"PALAI_SETTINGS_URL":           "runner-scoped: where a machine POLLS for its pool document, derived on the box from PALAI_CONTROLLER_URL.",
+	"PALAI_LOGS_URL":               "runner-scoped: where a machine SHIPS the lines it wrote, derived from the one controller address exactly as the settings URL is. It is read by cmd/runner and never by the control plane, which is the READER of those lines rather than a sender.",
+	"PALAI_AGENT_TARGET_VERSION":   "runner-scoped: the version this machine is asked to RUN. The agent proves a download before installing it — published digest, and the new binary must answer --version with the version asked for — so a bad release is a no-op rather than a machine that stops coming back.",
+	"PALAI_AGENT_RELEASE_BASE_URL": "runner-scoped: where this machine fetches a new version from. It is configuration rather than a constant because an air-gapped fleet mirrors its releases; empty means the machine refuses to update rather than guessing a host.",
+	"PALAI_SETTINGS_INTERVAL":      "runner-scoped: how often a machine polls for that document. It is the MACHINE's cadence — the plane cannot make a box ask more often by writing a number here.",
 	// ‼️ IT IS NOT A CATALOGUE ROW PRECISELY BECAUSE IT MUST NOT BE DELIVERABLE. The switch exists so a
 	// control plane ALONE cannot make a runner mount an arbitrary host path: the machine has to have said yes
 	// too (§24 trust boundary), and an INSTALLED device can never say it at all — allowUnsafeBind refuses

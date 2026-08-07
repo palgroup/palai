@@ -87,6 +87,16 @@ type ServeConfig struct {
 	//
 	// It takes the report and returns the document, so the two can never be wired to different endpoints.
 	Settings func(ctx context.Context, current Identity, report Settings) (Settings, error)
+	// Update moves this machine to a named version and reports whether anything changed. Nil = this
+	// build has no updater wired, and PALAI_AGENT_TARGET_VERSION then reports NOT READ.
+	//
+	// IT IS A SEAM AND NOT A DIRECT CALL because it downloads, verifies and replaces binaries — the one
+	// operation in this package that must be drivable in a test without a network or the right to write
+	// into /usr/local.
+	Update func(ctx context.Context, targetVersion string) (bool, error)
+	// ExitForUpdate ends the process after a successful update, so the service manager starts the new
+	// binary. Nil is a no-op, which is what a test wants and what a build with no updater has anyway.
+	ExitForUpdate func()
 	// SettingsInterval is how long the runner waits between polls, and it is therefore the WORST-CASE
 	// LATENCY from an operator pressing save to this machine acting on it. Zero uses
 	// defaultSettingsInterval.
@@ -365,6 +375,32 @@ func (cfg ServeConfig) applySettings(ctx context.Context, leases *leasePool, wg 
 				logf("settings: serving %d leases at once (was %d)", n, was)
 			}
 			verdict[name] = VerdictApplied
+		case "PALAI_AGENT_TARGET_VERSION":
+			// THE MACHINE MOVES ITSELF, and the plane only names where to. cfg.Update is nil on a build
+			// with no updater wired and on every deployment that has not configured a release base, and
+			// then this reports NOT READ rather than pretending: a panel that showed "applied" for a
+			// machine that cannot update is the defect this verdict map exists to prevent.
+			if cfg.Update == nil {
+				verdict[name] = VerdictNotRead
+				continue
+			}
+			changed, err := cfg.Update(ctx, value)
+			switch {
+			case err != nil:
+				// The running binary is untouched — the updater proves a download before installing it —
+				// so the machine keeps working and says why it did not move.
+				verdict[name] = RefusedVerdict(err.Error())
+			case changed:
+				// The process ends here so the service manager starts the new binary. Reported first: a
+				// verdict written after the exit is a verdict nobody reads.
+				verdict[name] = VerdictApplied
+				logf("settings: updated to %s — exiting so the service manager starts it", value)
+				if cfg.ExitForUpdate != nil {
+					defer cfg.ExitForUpdate()
+				}
+			default:
+				verdict[name] = VerdictApplied
+			}
 		default:
 			verdict[name] = VerdictNotRead
 		}

@@ -31,6 +31,7 @@ import (
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 	"github.com/palgroup/palai/packages/version"
 	"io"
+	"path/filepath"
 )
 
 func main() {
@@ -202,7 +203,14 @@ func main() {
 		// having to restart it. It authenticates with the certificate this machine already holds — no new
 		// credential, and no inbound port, which is the property cmd/runner's header states and this must
 		// not cost.
-		Settings:         settingsPoll(settingsURL, controllerCAs, controllerDNS),
+		Settings: settingsPoll(settingsURL, controllerCAs, controllerDNS),
+		// MOVING THIS MACHINE TO A NAMED VERSION, which the plane asks for by writing
+		// PALAI_AGENT_TARGET_VERSION into this machine's desired document. The updater proves a download
+		// — published digest, and the new binary must answer `--version` with the version asked for —
+		// before anything is replaced, because a machine that swaps in a broken binary is a machine
+		// nobody is watching that stops coming back.
+		Update:           selfUpdate(installed),
+		ExitForUpdate:    func() { stop(); os.Exit(0) },
 		SettingsInterval: settingsInterval(installed),
 		// The managed allocation root every leased workspace path must sit under before this runner
 		// bind-mounts it (spec §30.13, carry (b)). Unset disables the check (pre-E09 behaviour).
@@ -811,5 +819,28 @@ func shipLogs(ctx context.Context, buffer *runner.LogBuffer, url string, cas *x5
 			// own inability to empty it.
 			_ = runner.ShipLogs(ctx, current(), lines, config)
 		}
+	}
+}
+
+// selfUpdate builds the updater this machine uses, or nil when it has no installation to update.
+//
+// THE RELEASE BASE IS A SETTING AND NOT A CONSTANT, read from the same desired document that names the
+// target version: an air-gapped fleet mirrors its releases, and a machine that cannot reach the internet
+// must still be movable. A machine with no base configured refuses the update by name rather than
+// guessing a host.
+func selfUpdate(installed *device.Installation) func(context.Context, string) (bool, error) {
+	if installed == nil {
+		return nil
+	}
+	return func(ctx context.Context, target string) (bool, error) {
+		exe, err := os.Executable()
+		if err != nil {
+			return false, fmt.Errorf("resolve this binary's path: %w", err)
+		}
+		return device.SelfUpdate{
+			TargetVersion: target,
+			BaseURL:       installed.Config.ReleaseBaseURL,
+			InstallDir:    filepath.Dir(exe),
+		}.Apply(ctx, version.Resolve())
 	}
 }
