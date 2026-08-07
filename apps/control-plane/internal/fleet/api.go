@@ -64,7 +64,7 @@ func (s *Store) ListRunnerPools(ctx context.Context, project string, w api.Runne
 func poolItem(row Pool) api.RunnerPoolItem {
 	return api.RunnerPoolItem{
 		ID: row.ID, Project: row.Project, Name: row.Name, Posture: row.Posture, OS: row.OS, Arch: row.Arch,
-		StrictEnrollment: row.StrictEnrollment, CreatedAt: row.CreatedAt,
+		StrictEnrollment: row.StrictEnrollment, IsolationMode: row.IsolationMode, CreatedAt: row.CreatedAt,
 	}
 }
 
@@ -164,6 +164,7 @@ func (a *RegistryAPI) ApproveRunner(ctx context.Context, scope middleware.Scope,
 func (s *Store) CreateRunnerPool(ctx context.Context, project string, in api.RunnerPoolCreate) (api.RunnerPoolItem, error) {
 	row, err := s.CreatePool(ctx, project, Pool{
 		Name: in.Name, Posture: in.Posture, OS: in.OS, Arch: in.Arch, StrictEnrollment: in.StrictEnrollment,
+		IsolationMode: in.IsolationMode,
 	})
 	if errors.Is(err, ErrPoolNameTaken) {
 		return api.RunnerPoolItem{}, api.ErrRunnerPoolNameTaken

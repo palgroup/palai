@@ -274,3 +274,42 @@ func poolCLIServer(t *testing.T, fleet capi.RunnerRegistryAPI, scope middleware.
 	t.Cleanup(srv.Close)
 	return srv
 }
+
+// TestPoolCreateCarriesTheIsolationRequirementTheOperatorTyped — the operator's end of 000007.
+//
+// The column, its CHECK, the fleet store's refusal and that refusal's journal entry all shipped; what did
+// not was any way to ASK. Measured 2026-08-07: `isolation_mode` appeared in one SELECT and zero
+// INSERT/UPDATE statements, so `fleet.Store.Register`'s ErrIsolationUnsupported waited on a state no
+// operator could produce — the same sentence TestPoolSetStrictReachesTheRealRouter records above it.
+//
+// THE ASSERTION IS ON WHAT THE PLANE WAS ASKED FOR, never on the CLI's own echo, because a flag parsed
+// into a variable nothing sends is exactly the shape this test exists to catch.
+func TestPoolCreateCarriesTheIsolationRequirementTheOperatorTyped(t *testing.T) {
+	fleet := &fakeFleet{}
+	srv := poolCLIServer(t, fleet, middleware.Scope{Project: "prj_1"})
+	t.Setenv("PALAI_BASE_URL", srv.URL)
+	t.Setenv("PALAI_API_KEY", "bootstrap-admin-key")
+
+	var out bytes.Buffer
+	if err := Run("pool", []string{"create", "--name", "mac-dense", "--posture", "unsandboxed-host",
+		"--isolation", "accounts"}, &out, strings.NewReader("")); err != nil {
+		t.Fatalf("palai pool create --isolation accounts: %v", err)
+	}
+	if fleet.created.IsolationMode != "accounts" {
+		t.Fatalf("the control plane was asked for isolation_mode=%q, want \"accounts\" — an operator cannot arm the enrolment refusal that turns away a Mac with no palai-agentd",
+			fleet.created.IsolationMode)
+	}
+
+	// AND OMITTING IT ASKS FOR NOTHING, which is every pool shipped so far. A CLI that sent "" or a default
+	// would either impose a requirement nobody typed or start failing the day the route stops special-casing
+	// the empty string.
+	fleet.created = createdPool{}
+	out.Reset()
+	if err := Run("pool", []string{"create", "--name", "mac-plain", "--posture", "unsandboxed-host"},
+		&out, strings.NewReader("")); err != nil {
+		t.Fatalf("palai pool create with no --isolation: %v", err)
+	}
+	if fleet.created.IsolationMode != "" {
+		t.Fatalf("a create with no --isolation asked for %q, want \"\"", fleet.created.IsolationMode)
+	}
+}

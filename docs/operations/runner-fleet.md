@@ -214,6 +214,51 @@ palai project set-policy prj_local --approvers key:ak_…      # then approve wi
 
 Both are filed as `FLT-P12`/`FLT-P13` in [known-gaps-1.0.md](known-gaps-1.0.md).
 
+## 3b. Requiring an isolation mechanism, not just a posture
+
+Strict mode asks **who** enrolled a machine. This asks **what the machine can do** — and it is the only
+control here that is checked against something the machine *measured about itself* rather than against
+something it declared.
+
+```bash
+palai pool create --name mac-dense --posture unsandboxed-host --isolation accounts
+```
+
+A machine enrolling into that pool sends the modes it measured. If `accounts` is not among them — no
+`palai-agentd`, so it cannot give a session its own macOS account — the enrolment is **refused at the
+door** and the refusal is written to `runner_enrollments` as `refused`, with what the pool asked for and
+what the machine had. It never becomes ready capacity, which is the point: a machine that cannot execute
+the way the pool requires must not appear as a machine that can.
+
+| value | what the machine must be able to do |
+|---|---|
+| *(omitted)* | nothing. **This is every pool created before 2026-08-07**, and it admits every machine. |
+| `user` | per-session `HOME`/`TMPDIR` under the allocation. Same-customer accident isolation. |
+| `accounts` | one non-admin macOS account per session, minted and destroyed by `palai-agentd` (needs a one-time administrator install — [`mac-sessions.md`](mac-sessions.md) §2). |
+| `container` | the Linux OCI sandbox posture. |
+
+**It can now be asked for, which until 2026-08-07 it could not.** `runner_pools.isolation_mode`, its
+`CHECK`, the enrolment refusal and that refusal's journal entry all shipped with `000007` — and the column
+appeared in exactly **one `SELECT` and zero `INSERT`/`UPDATE` statements** in the whole tree, so the only
+thing that ever set it was a test file issuing raw SQL. The refusal was real, correct and unreachable: it
+waited on a state no operator could produce. Verify the writer exists rather than trusting this sentence:
+
+```bash
+# `grep -v ':--'` drops COMMENT lines, and it is not cosmetic: the note above the statement says the words
+# "INSERT/UPDATE" itself, so the obvious form of this command answers 2 and the extra one is prose.
+grep -n 'isolation_mode' storage/queries/runners.sql | grep -v ':--' | grep -icE 'insert|update'
+# -> 1 (2026-08-07). It was 0, and a 0 here means the pool below can be created but never asked for.
+```
+
+**A blank is a real answer and it is rendered rather than omitted.** `palai pool list` prints
+`isolation_mode` for every pool including the empty one, because "this pool admits any machine" is the
+fact an operator most needs to see on a **shared** pool and the least likely to go looking for.
+
+**What this does NOT do.** It does not make one Mac safe for two customers. `accounts` is a boundary
+between *sessions*; the operating rule for *customers* is unchanged and is the whole mitigation —
+**different customers → different Macs** (`MAC-P1`, `MAC-P6`). The control plane enforces that
+separately: a Mac another customer is holding refuses this one's run and parks it until the hold settles.
+
 ## 4. Taking one machine out of service
 
 Three verbs, each about **one** machine, each recorded in the database so a control-plane restart does not

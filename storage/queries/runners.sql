@@ -258,8 +258,14 @@ VALUES ($1, $2, 'default', 'sandboxed-linux', false)
 -- fleet.Store.Register turning away a machine whose pool had no project -- was the write half of a
 -- boundary whose read half (the RLS tenant expression) spelled shared as '' and could never agree with
 -- it; 000002's palai_apply_fleet_policy is the two halves made to agree.
-INSERT INTO runner_pools (id, project_id, name, posture, os, arch, strict_enrollment)
-VALUES ($1, nullif($2, ''), $3, $4, $5, $6, $7)
+-- $8 IS 000007's REQUIREMENT, AND UNTIL IT WAS A PARAMETER THE COLUMN HAD NO WRITER AT ALL. Measured
+-- 2026-08-07: `isolation_mode` appeared in exactly one SELECT and zero INSERT/UPDATE statements, so the
+-- refusal fleet/store.go raises from it (isolationSatisfied, journalled) waited on a state no operator
+-- could produce — the same sentence this file already records about `strict_enrollment` before E28 T1.
+-- Empty stays the shipped value and admits every machine; the CHECK is the last defence, the route the
+-- first.
+INSERT INTO runner_pools (id, project_id, name, posture, os, arch, strict_enrollment, isolation_mode)
+VALUES ($1, nullif($2, ''), $3, $4, $5, $6, $7, $8)
 RETURNING created_at;
 
 -- name: SetRunnerPoolStrictEnrollment
@@ -274,7 +280,8 @@ UPDATE runner_pools
    SET strict_enrollment = $3
  WHERE ($1 = '' OR project_id = $1)
    AND id = $2
-RETURNING id, coalesce(project_id, '') AS project_id, name, posture, os, arch, strict_enrollment, created_at;
+RETURNING id, coalesce(project_id, '') AS project_id, name, posture, os, arch, strict_enrollment,
+          isolation_mode, created_at;
 
 -- name: ListRunnerPools
 -- The tenant-scoped keyset page of pools: (created_at, id) DESC, the ordering api/pagination.go mints
@@ -288,7 +295,8 @@ RETURNING id, coalesce(project_id, '') AS project_id, name, posture, os, arch, s
 -- ON DELETE CASCADE on this table (000045 R2), so removing a pool would silently remove its enrolment
 -- keys, and what happens to the machines whose `pool_id` points here is a separate decision nobody has
 -- asked for. This comment names no future owner, because a comment cannot schedule work.
-SELECT id, coalesce(project_id, '') AS project_id, name, posture, os, arch, strict_enrollment, created_at
+SELECT id, coalesce(project_id, '') AS project_id, name, posture, os, arch, strict_enrollment,
+       isolation_mode, created_at
   FROM runner_pools
  WHERE ($1 = '' OR project_id = $1 OR project_id IS NULL)
    AND ($2::timestamptz IS NULL OR created_at >= $2)

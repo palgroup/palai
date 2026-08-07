@@ -44,6 +44,7 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/internal/fleet"
 	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/coordinator"
+	"github.com/palgroup/palai/packages/device"
 	"github.com/palgroup/palai/packages/runner"
 	"github.com/palgroup/palai/storage"
 )
@@ -602,4 +603,71 @@ func poolRow(t *testing.T, pool *pgxpool.Pool, id string) bornPool {
 		t.Fatalf("read pool %s: %v", id, err)
 	}
 	return row
+}
+
+// TestAPoolCanBeCreatedREQUIRINGAnIsolationModeAndTheRouteRefusesAWordThePlaneDoesNotKnow — THE HALF OF
+// 000007 THAT HAD NO DOOR.
+//
+// fleet's TestAPoolCanRequireAnIsolationModeTheMachineMeasured proves the refusal this arms: a machine that
+// measured only `user` is turned away from an `accounts` pool, and the refusal is journalled. It passed on
+// every build where the requirement was UNREACHABLE, because it wrote `isolation_mode` with a raw UPDATE —
+// measured 2026-08-07, the column appeared in one SELECT and zero INSERT/UPDATE statements, and the create
+// route dropped the field on the floor. So an operator could publish a shared Mac pool to every tenant and
+// had no way to state what those Macs must be able to do first, which is DoD 19's whole sentence.
+//
+// THE ASSERTIONS ARE ON THE OPERATOR'S OWN BYTES. What is created is read back from the create response AND
+// from the list, because a create that answers in a shape the read does not repeat is how a requirement
+// silently becomes "" — and "" is not a missing answer here, it is `admits every machine`.
+func TestAPoolCanBeCreatedREQUIRINGAnIsolationModeAndTheRouteRefusesAWordThePlaneDoesNotKnow(t *testing.T) {
+	b := newBirthFixture(t)
+
+	status, raw := b.call(t, http.MethodPost, "/v1/runner-pools", b.admin, map[string]any{
+		"name": "mac-accounts", "posture": "unsandboxed-host", "os": "darwin", "arch": "arm64",
+		"isolation_mode": device.IsolationAccounts,
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("POST /v1/runner-pools asking for accounts isolation = %d, want 201: %s — an operator cannot state the requirement the enrolment refusal reads", status, raw)
+	}
+	var created map[string]any
+	if err := json.Unmarshal(raw, &created); err != nil {
+		t.Fatalf("decode the create response %q: %v", raw, err)
+	}
+	if got := created["isolation_mode"]; got != device.IsolationAccounts {
+		t.Fatalf("the created pool answers isolation_mode=%v, want %q — the route accepted the field and did not keep it", got, device.IsolationAccounts)
+	}
+
+	// IT SURVIVED THE WRITE, not just the response struct. The list is a second read through a second
+	// statement, and it is the one an operator returns to tomorrow.
+	var listed map[string]any
+	for _, pool := range b.listPools(t, b.admin) {
+		if pool["id"] == created["id"] {
+			listed = pool
+		}
+	}
+	if listed == nil {
+		t.Fatalf("the created pool %v is not in the operator's own listing", created["id"])
+	}
+	if got := listed["isolation_mode"]; got != device.IsolationAccounts {
+		t.Fatalf("the listed pool answers isolation_mode=%v, want %q — the requirement did not survive the round trip, so the refusal it arms would never fire", got, device.IsolationAccounts)
+	}
+
+	// AND A POOL THAT ASKS FOR NOTHING STILL SAYS SO, which is every pool alive today and the leg without
+	// which a route that required a mode would take every deployment offline. Rendered rather than omitted:
+	// absence would read as "not asked", and here the empty string is the answer that matters.
+	plain := b.createPool(t, "mac-plain", "unsandboxed-host", false)
+	if got, ok := plain["isolation_mode"]; !ok || got != "" {
+		t.Fatalf("a pool created without the field answers isolation_mode=%v (present=%v), want \"\" — an operator cannot tell a pool that requires nothing from one whose requirement was dropped", got, ok)
+	}
+
+	// A WORD THIS PLANE DOES NOT KNOW IS A 400 ON THE ROUTE, not a 23514 the handler renders as
+	// internal_error. `sudo` is the realistic typo: it is what the mechanism NEEDS, not what it is called,
+	// and a pool created under it would admit exactly the machines the operator meant to exclude.
+	for _, word := range []string{"sudo", "sandbox", "accounts ", "ACCOUNTS"} {
+		status, raw := b.call(t, http.MethodPost, "/v1/runner-pools", b.admin, map[string]any{
+			"name": "mac-" + word, "posture": "unsandboxed-host", "isolation_mode": word,
+		})
+		if status != http.StatusBadRequest {
+			t.Fatalf("POST /v1/runner-pools with isolation_mode=%q = %d, want 400: %s", word, status, raw)
+		}
+	}
 }

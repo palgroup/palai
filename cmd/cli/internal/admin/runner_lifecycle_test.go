@@ -52,6 +52,10 @@ type fakeFleet struct {
 type createdPool struct {
 	Name, Posture, OS, Arch string
 	StrictEnrollment        bool
+	// IsolationMode is what the operator asked every machine in this pool to be able to PROVIDE
+	// (000007). Recorded here because a flag the CLI parses and never sends is indistinguishable from
+	// one it sends, on the CLI's own output alone.
+	IsolationMode string
 }
 
 func (f *fakeFleet) ListRunners(context.Context, string, capi.RunnerListWindow) ([]capi.RunnerItem, error) {
@@ -82,7 +86,8 @@ func (f *fakeFleet) ListRunnerPools(context.Context, string, capi.RunnerListWind
 // CreateRunnerPool and SetRunnerPoolStrictEnrollment are the E28 T1 surface `palai pool` fronts.
 func (f *fakeFleet) CreateRunnerPool(_ context.Context, project string, in capi.RunnerPoolCreate) (capi.RunnerPoolItem, error) {
 	f.createdProject = project
-	f.created = createdPool{Name: in.Name, Posture: in.Posture, OS: in.OS, Arch: in.Arch, StrictEnrollment: in.StrictEnrollment}
+	f.created = createdPool{Name: in.Name, Posture: in.Posture, OS: in.OS, Arch: in.Arch,
+		StrictEnrollment: in.StrictEnrollment, IsolationMode: in.IsolationMode}
 	return capi.RunnerPoolItem{
 		ID: "pool_created", Name: in.Name, Posture: in.Posture, OS: in.OS, Arch: in.Arch,
 		StrictEnrollment: in.StrictEnrollment, CreatedAt: time.Unix(1700000000, 0).UTC(),

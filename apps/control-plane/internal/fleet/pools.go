@@ -133,6 +133,7 @@ func (s *Store) CreatePool(ctx context.Context, project string, in Pool) (Pool, 
 	row := Pool{
 		ID: s.mintID("pool"), Project: project, Name: in.Name,
 		Posture: in.Posture, OS: in.OS, Arch: in.Arch, StrictEnrollment: in.StrictEnrollment,
+		IsolationMode: in.IsolationMode,
 	}
 	// ‼️ THE SCOPE FOLLOWS THE OWNER, and the two arms are not interchangeable.
 	//
@@ -151,7 +152,7 @@ func (s *Store) CreatePool(ctx context.Context, project string, in Pool) (Pool, 
 		ctx = storage.WithTenant(ctx, project)
 	}
 	err := s.pool.QueryRow(ctx, storage.Query("InsertRunnerPool"),
-		row.ID, row.Project, row.Name, row.Posture, row.OS, row.Arch, row.StrictEnrollment).
+		row.ID, row.Project, row.Name, row.Posture, row.OS, row.Arch, row.StrictEnrollment, row.IsolationMode).
 		Scan(&row.CreatedAt)
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -176,7 +177,8 @@ func (s *Store) SetStrictEnrollment(ctx context.Context, project, poolID string,
 	ctx = storage.WithTenant(ctx, project)
 	var p Pool
 	err := s.pool.QueryRow(ctx, storage.Query("SetRunnerPoolStrictEnrollment"), project, poolID, strict).
-		Scan(&p.ID, &p.Project, &p.Name, &p.Posture, &p.OS, &p.Arch, &p.StrictEnrollment, &p.CreatedAt)
+		Scan(&p.ID, &p.Project, &p.Name, &p.Posture, &p.OS, &p.Arch, &p.StrictEnrollment,
+			&p.IsolationMode, &p.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Pool{}, false, nil
 	}
@@ -203,7 +205,7 @@ func (s *Store) ListPools(ctx context.Context, project string, window ListWindow
 	for rows.Next() {
 		var p Pool
 		if err := rows.Scan(&p.ID, &p.Project, &p.Name, &p.Posture, &p.OS, &p.Arch,
-			&p.StrictEnrollment, &p.CreatedAt); err != nil {
+			&p.StrictEnrollment, &p.IsolationMode, &p.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan runner pool: %w", err)
 		}
 		out = append(out, p)

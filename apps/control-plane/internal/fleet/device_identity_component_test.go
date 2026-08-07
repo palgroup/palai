@@ -197,7 +197,7 @@ func TestAClaimedIdentityMustBelongToThisDeviceKey(t *testing.T) {
 // two admitting cases that keep it from refusing every deployment alive today.
 func TestAPoolCanRequireAnIsolationModeTheMachineMeasured(t *testing.T) {
 	pool := openDeviceSpine(t)
-	_, poolID := tenantFixture(t, pool, "unsandboxed-host")
+	project, poolID := tenantFixture(t, pool, "unsandboxed-host")
 	registry := fleet.NewStore(pool, newID, nil)
 	ctx := context.Background()
 
@@ -207,22 +207,35 @@ func TestAPoolCanRequireAnIsolationModeTheMachineMeasured(t *testing.T) {
 		t.Fatalf("a pool with no isolation requirement refused a machine: %v", err)
 	}
 
-	if _, err := pool.Exec(storage.WithSystemScope(ctx),
-		`UPDATE runner_pools SET isolation_mode = 'accounts' WHERE id = $1`, poolID); err != nil {
-		t.Fatalf("set the pool's isolation mode (does migration 000007 add the column?): %v", err)
+	// ‼️ THE REQUIREMENT IS WRITTEN BY THE PRODUCTION WRITER, and until 2026-08-07 this test wrote it with
+	// a raw `UPDATE runner_pools SET isolation_mode` — a state NO operator could produce. That is what hid
+	// the gap for a year: every leg below passed, the refusal was real, journalled and correct, and the
+	// column it reads had no INSERT or UPDATE anywhere in the tree, so nothing could ever arm it. A fixture
+	// that reaches past the writer proves the mechanism and says nothing about whether anyone can ask for it.
+	required, err := registry.CreatePool(ctx, project, fleet.Pool{
+		Name: newID("accounts-pool"), Posture: "unsandboxed-host", IsolationMode: device.IsolationAccounts,
+	})
+	if err != nil {
+		t.Fatalf("create a pool that REQUIRES accounts isolation: %v", err)
+	}
+	// Non-vacuity: the writer must have stored it. A CreatePool that dropped the field would leave a pool
+	// with no requirement, and every refusal below would silently become an admission.
+	if got := requiredMode(t, pool, required.ID); got != device.IsolationAccounts {
+		t.Fatalf("the created pool requires %q, want %q — the write path dropped the field, so nothing below is a statement about isolation",
+			got, device.IsolationAccounts)
 	}
 
 	// The machine measured `user` only: no palai-agentd, so it cannot give each session its own account.
-	if _, err := registry.Register(ctx, deviceEnrolment(poolID, "no-daemon", newID("fp"))); !errors.Is(err, fleet.ErrIsolationUnsupported) {
+	if _, err := registry.Register(ctx, deviceEnrolment(required.ID, "no-daemon", newID("fp"))); !errors.Is(err, fleet.ErrIsolationUnsupported) {
 		t.Fatalf("a machine with no accounts isolation joined an accounts-only pool: %v", err)
 	}
 	// The refusal is JOURNALLED. An enrolment that "just fails" leaves an operator with nothing to read.
-	if got := countRows(t, pool, `SELECT count(*) FROM runner_enrollments WHERE pool_id = $1 AND entry_kind = 'refused'`, poolID); got != 1 {
+	if got := countRows(t, pool, `SELECT count(*) FROM runner_enrollments WHERE pool_id = $1 AND entry_kind = 'refused'`, required.ID); got != 1 {
 		t.Fatalf("the isolation refusal produced %d journal entries, want 1", got)
 	}
 
 	// The same machine, having measured the mode, is admitted.
-	admitted := deviceEnrolment(poolID, "with-daemon", newID("fp"))
+	admitted := deviceEnrolment(required.ID, "with-daemon", newID("fp"))
 	admitted.IsolationModes = []string{device.IsolationAccounts, device.IsolationUser}
 	if _, err := registry.Register(ctx, admitted); err != nil {
 		t.Fatalf("a machine that measured the pool's mode was refused: %v", err)
@@ -230,7 +243,10 @@ func TestAPoolCanRequireAnIsolationModeTheMachineMeasured(t *testing.T) {
 
 	// A machine that measured NOTHING is admitted, which is every runner built before packages/device.
 	// Without this leg the check refuses every existing deployment for a mechanism none of them declared.
-	legacy := deviceEnrolment(poolID, "pre-device", newID("fp"))
+	//
+	// AGAINST THE REQUIRING POOL, and that is the whole leg: on the unrestricted pool above it would be a
+	// second copy of the first assertion and would hold for a build with no isolation check at all.
+	legacy := deviceEnrolment(required.ID, "pre-device", newID("fp"))
 	legacy.IsolationModes = nil
 	if _, err := registry.Register(ctx, legacy); err != nil {
 		t.Fatalf("a runner too old to measure its isolation modes was refused: %v", err)
@@ -307,4 +323,17 @@ func countRows(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) int {
 		t.Fatalf("count (%s): %v", sql, err)
 	}
 	return n
+}
+
+// requiredMode reads what a pool ASKS OF A MACHINE, straight from the column, because the claim above is
+// about what the write path stored and a read that went back through the same struct could agree with a
+// writer that dropped the field.
+func requiredMode(t *testing.T, pool *pgxpool.Pool, poolID string) string {
+	t.Helper()
+	var mode string
+	if err := pool.QueryRow(storage.WithSystemScope(context.Background()),
+		`SELECT isolation_mode FROM runner_pools WHERE id = $1`, poolID).Scan(&mode); err != nil {
+		t.Fatalf("read pool %s isolation_mode: %v", poolID, err)
+	}
+	return mode
 }

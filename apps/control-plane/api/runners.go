@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
+	"github.com/palgroup/palai/packages/device"
 )
 
 // The runner registry surface: the READ half (E24 T1), the pool-key half (E24 T3) and the LIFECYCLE half
@@ -108,7 +109,15 @@ type RunnerPoolItem struct {
 	OS               string
 	Arch             string
 	StrictEnrollment bool
-	CreatedAt        time.Time
+	// IsolationMode is the session-isolation mechanism a machine must be able to provide to enrol here
+	// (000007), and "" — every pool that exists before an operator asks for one — admits every machine.
+	//
+	// IT IS PROJECTED BECAUSE A REQUIREMENT NOBODY CAN READ BACK IS ONE NOBODY CAN TRUST. The refusal it
+	// arms happens at ENROLMENT, on the machine's side of the wire, hours after the pool was created; an
+	// operator whose Mac was turned away needs to see what this pool asked for in order to know whether
+	// the machine or the pool is the thing to change.
+	IsolationMode string
+	CreatedAt     time.Time
 	// Waiting is how many attempts are queued for this pool with no machine free to take them — the number
 	// `RunnerGateway.Waiting(poolID)` has counted since E24 and that nothing read until E28 T1 (`FLT-P14`).
 	// It answers the one question an operator of a fleet actually asks: why is nothing running in my Mac
@@ -148,6 +157,18 @@ type RunnerPoolCreate struct {
 	// the same reason.
 	Shared           bool
 	StrictEnrollment bool
+	// IsolationMode is what a machine must be able to PROVIDE to enrol into this pool, and it is the half
+	// of 000007 that had no writer until 2026-08-07: `isolation_mode` was in one SELECT and no INSERT, so
+	// fleet.Store.Register's isolationSatisfied refusal — real, measured, and journalled — could never be
+	// armed by anyone. That is the same shape this file records for `strict_enrollment` before E28 T1: a
+	// route deciding a state no operator could produce.
+	//
+	// IT MATTERS MOST ON A SHARED POOL, which is why the two fields sit together. Plan §3.5 and DoD 19:
+	// `user` is same-customer accident isolation and NOT a cross-customer boundary, so a fleet serving
+	// many customers runs `accounts`, where a session holds its own macOS account and the account is
+	// deleted once its workspace is archived. Without this field an operator could publish plane-owned
+	// hardware to every tenant and had no way to say what that hardware must be able to do first.
+	IsolationMode string
 }
 
 // ErrRunnerPoolNameTaken is the runner_pools name uniqueness rendered as an answer rather than as a 500.
@@ -172,6 +193,21 @@ var ErrRunnerPoolNameTaken = errors.New("api: a runner pool with that name alrea
 // typo a named 400 instead of a 23514 the handler could only render as "internal_error"; the CHECK stays
 // the last defence rather than the first.
 var runnerPoolPostures = map[string]bool{"sandboxed-linux": true, "unsandboxed-host": true}
+
+// runnerPoolIsolationModes is 000007's CHECK minus the empty string, which this route treats as "no
+// requirement" rather than as a value to validate.
+//
+// THE WORDS COME FROM packages/device AND ARE NOT RETYPED HERE. They are what a MACHINE measures about
+// itself and sends at enrolment, and the refusal that compares the two (fleet.Store.Register) reads the
+// machine's side from that same package — so a literal in this map would be a second spelling of a word
+// whose only job is to match, and the day one of them changed the pool would quietly stop requiring
+// anything. `device` is a leaf (it imports `sort` and `strings`), so naming it here adds no coupling
+// beyond the three strings themselves.
+var runnerPoolIsolationModes = map[string]bool{
+	device.IsolationUser:      true,
+	device.IsolationAccounts:  true,
+	device.IsolationContainer: true,
+}
 
 // RunnerPoolKeyItem is one enrolment key's operator-facing projection (E24 T3). Value is set ONLY on
 // the create response — the one time the value is shown — and is `omitempty` so a listing physically
@@ -428,6 +464,7 @@ func (h *runnerHandler) createRunnerPool(w http.ResponseWriter, r *http.Request)
 		Arch             string `json:"arch"`
 		Shared           bool   `json:"shared"`
 		StrictEnrollment bool   `json:"strict_enrollment"`
+		IsolationMode    string `json:"isolation_mode"`
 	}
 	decoder := json.NewDecoder(io.LimitReader(r.Body, 4096))
 	// A field this route does not know is a knob a caller believes exists. Refusing beats ignoring, which is
@@ -448,6 +485,16 @@ func (h *runnerHandler) createRunnerPool(w http.ResponseWriter, r *http.Request)
 			"posture must be one of sandboxed-linux, unsandboxed-host")
 		return
 	}
+	// THE REQUIREMENT IS OPTIONAL AND ITS ABSENCE IS A REAL ANSWER, which is the one way it differs from
+	// the posture above: every pool that exists today carries "" and admits every machine, so a blank is
+	// what an operator who has not thought about isolation gets and it must not be an error. What must be
+	// an error is a WORD THIS PLANE DOES NOT KNOW — `sudo`, `sandbox`, `strict` — because a pool created
+	// with one would silently admit the machines the operator believed it was excluding.
+	if body.IsolationMode != "" && !runnerPoolIsolationModes[body.IsolationMode] {
+		middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request",
+			"isolation_mode must be one of user, accounts, container, or omitted to require none")
+		return
+	}
 	// The owner: the plane for a shared pool, this caller's project otherwise. It is derived HERE and
 	// from the verified scope, never from the body — a caller naming another tenant's project would be
 	// creating a pool inside a boundary it did not prove.
@@ -459,6 +506,7 @@ func (h *runnerHandler) createRunnerPool(w http.ResponseWriter, r *http.Request)
 		Name: strings.TrimSpace(body.Name), Posture: body.Posture, OS: body.OS, Arch: body.Arch,
 		Shared:           body.Shared,
 		StrictEnrollment: body.StrictEnrollment,
+		IsolationMode:    body.IsolationMode,
 	})
 	switch {
 	case errors.Is(err, ErrRunnerPoolNameTaken):
@@ -855,6 +903,10 @@ func runnerPoolView(it RunnerPoolItem) map[string]any {
 		// Rendered UNCONDITIONALLY, including empty, for runnerView's reason: absence would read as "not
 		// asked", and here the empty value is the answer that matters most -- this pool is the plane's.
 		"project_id": it.Project,
+		// UNCONDITIONAL FOR THE SAME REASON AND A SHARPER ONE: "" is not a missing requirement, it is the
+		// statement that this pool admits any machine, and that is exactly what an operator reading a
+		// SHARED pool needs to see rather than infer from a key that is not there.
+		"isolation_mode": it.IsolationMode,
 	}
 	if it.Waiting != nil {
 		view["waiting"] = *it.Waiting

@@ -90,6 +90,7 @@ type flags struct {
 	arch          string
 	strict        bool
 	shared        bool
+	isolation     string
 	// The E29 model-wiring flags. Every one is a PUBLIC fact — a family name, a secret REF name, a URL, a
 	// model id. None can carry a credential, and admin_test.go's TestModelFlagsCarryNoCredential is what
 	// keeps the next one from doing so.
@@ -141,6 +142,7 @@ func (f *flags) register(fs *flag.FlagSet, resource string) {
 		fs.StringVar(&f.osName, "os", "", "the OS machines in this pool report, e.g. darwin (create, optional)")
 		fs.StringVar(&f.arch, "arch", "", "the architecture machines in this pool report, e.g. arm64 (create, optional)")
 		fs.BoolVar(&f.strict, "strict", false, "enrolling into this pool needs a human approval (create, set-strict) — omit on set-strict to close the waiting room")
+		fs.StringVar(&f.isolation, "isolation", "", "the session-isolation mechanism a machine must MEASURE to enrol here: user, accounts or container — omit to require none, which is every pool shipped so far (create)")
 		fs.BoolVar(&f.shared, "shared", false, "the PLANE owns this pool: every project on the installation may be placed onto it (create). Omitted, the pool is reserved to this key's project")
 	case "poolkey":
 		// There is deliberately no flag carrying a key value: a pool key only ever comes OUT of `create`,
@@ -401,6 +403,14 @@ func (c *Client) execute(resource, sub string, pos []string, f *flags) error {
 			}
 			if f.arch != "" {
 				b["arch"] = f.arch
+			}
+			// SENT ONLY WHEN ASKED FOR, unlike `strict_enrollment` above, and the difference is the route's:
+			// a blank is "require nothing" and the create route validates any value it IS given, so sending
+			// "" unconditionally would work today and would become a 400 the moment the route stopped
+			// special-casing the empty string. The field an operator did not type is a field this request
+			// does not carry.
+			if f.isolation != "" {
+				b["isolation_mode"] = f.isolation
 			}
 			return c.do(http.MethodPost, "/v1/runner-pools", body(b))
 		case "list":
