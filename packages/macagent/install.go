@@ -8,6 +8,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // ErrCannotElevate is what an install returns when nothing here can raise privilege silently. It is a
@@ -58,6 +59,14 @@ type Install struct {
 // ‼️ AND IT VERIFIES BEFORE IT RETURNS. "I installed it" is a claim; "I connected and `list` answered"
 // is a measurement, and the difference is this epic's entire reason for existing — the tree already
 // shipped an install whose having-been-done was assumed and whose socket nothing ever dialled.
+// bootoutSettle bounds how long an install waits for launchd to finish unloading the previous job, and
+// bootoutPoll is how often it asks. Both are small: the wait is for a kernel bookkeeping step, not for a
+// process to shut down gracefully, and a daemon that will not go in two seconds will not go in twenty.
+const (
+	bootoutSettle = 2 * time.Second
+	bootoutPoll   = 100 * time.Millisecond
+)
+
 func (i Install) Apply(ctx context.Context) (Health, error) {
 	if !i.Elevation.CanElevate() {
 		return Health{}, fmt.Errorf("%w: neither root (euid %d) nor passwordless sudo (`%s -n %s` was refused)",
@@ -142,6 +151,22 @@ func (i Install) Apply(ctx context.Context) (Health, error) {
 	//    new file on disk and an old daemon on the socket disagree.
 	bootoutBin, bootoutArgs := i.Elevation.privileged(launchctlPath, "bootout", "system/"+LaunchDaemonLabel)
 	_, _ = run(ctx, bootoutBin, bootoutArgs...)
+	// ‼️ `bootout` RETURNS BEFORE THE JOB IS GONE, and bootstrapping into the gap answers
+	// `Bootstrap failed: 5: Input/output error` — the same errno a malformed plist gives, which is what
+	// makes this expensive to diagnose. Measured on a real Mac on 2026-08-08, re-installing the daemon
+	// over a running one; every earlier install on that machine had no job to unload and never opened
+	// the window.
+	//
+	// So the unload is WAITED OUT rather than assumed: `launchctl print` answers non-zero once the job
+	// is really gone. The wait is bounded and its expiry is not fatal — a bootstrap that then fails
+	// reports the real reason, and turning a slow unload into its own error message would hide it.
+	for waited := time.Duration(0); waited < bootoutSettle; waited += bootoutPoll {
+		printBin, printArgs := i.Elevation.privileged(launchctlPath, "print", "system/"+LaunchDaemonLabel)
+		if _, err := run(ctx, printBin, printArgs...); err != nil {
+			break
+		}
+		time.Sleep(bootoutPoll)
+	}
 	if err := step(launchctlPath, "bootstrap", "system", LaunchDaemonPlistPath); err != nil {
 		return Health{}, err
 	}
