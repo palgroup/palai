@@ -251,6 +251,19 @@ func validateDesiredValue(entry catalogueEntry, value string) error {
 			return fmt.Errorf("%q does not survive a round trip through the reader's own parse (it reads back as %q). "+
 				"Send the canonical form", value, strconv.Itoa(n))
 		}
+	case desiredBool:
+		b, err := strconv.ParseBool(value)
+		if err != nil {
+			return fmt.Errorf("not a boolean this binary's own reader would parse (strconv.ParseBool: %v). "+
+				"Its reader FAILS CLOSED — it reads what it cannot parse as the switch being ON — so a stored "+
+				"value like this would turn the feature off while the panel showed the word", err)
+		}
+		if strconv.FormatBool(b) != value {
+			// `1`, `TRUE`, `t` all parse; only the canonical spelling survives, for desiredInt's reason: the
+			// value STORED must be the one the reader parses back to, or the screen and the process disagree.
+			return fmt.Errorf("%q does not survive a round trip through the reader's own parse (it reads back as %q). "+
+				"Send the canonical form", value, strconv.FormatBool(b))
+		}
 	case desiredRate:
 		f, err := strconv.ParseFloat(value, 64)
 		if err != nil {

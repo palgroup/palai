@@ -200,6 +200,19 @@ services:
       PALAI_S3_REGION: ${PALAI_S3_REGION:-}
       PALAI_METRICS_DISK_PATH: ${PALAI_METRICS_DISK_PATH:-}
       PALAI_WORKSPACE_IDLE_TTL: ${PALAI_WORKSPACE_IDLE_TTL:-}
+      # The E26 background ceilings, passed for the reason every line here is: a setting the panel may
+      # write is a setting this container has to RECEIVE, or the write lands in the desired document and the
+      # process never sees it. They are read per call inside the dispatcher, so the value has to be in the
+      # environment rather than captured at start.
+      PALAI_BACKGROUND_DISABLED: ${PALAI_BACKGROUND_DISABLED:-}
+      PALAI_BACKGROUND_MAX_WALL_TIME: ${PALAI_BACKGROUND_MAX_WALL_TIME:-}
+      PALAI_BACKGROUND_MAX_PER_RUN: ${PALAI_BACKGROUND_MAX_PER_RUN:-}
+      PALAI_BACKGROUND_MAX_PER_HOST: ${PALAI_BACKGROUND_MAX_PER_HOST:-}
+      PALAI_BACKGROUND_LOG_TTL: ${PALAI_BACKGROUND_LOG_TTL:-}
+      # Catalogued but NOT panel-writable, and passed for exactly that reason: the entry tells an operator
+      # this switch is set on the machine rather than from a form, and a name compose does not list cannot be
+      # set on the machine either — `--env-file` supplies values, it cannot introduce a key. Empty is absent.
+      PALAI_ALLOW_LOCAL_REPOSITORY: ${PALAI_ALLOW_LOCAL_REPOSITORY:-}
       # How long one attempt's ENGINE may run. It sits on the control plane and not on the runner
       # because the limits ride the lease: the plane decides the bound and the machine enforces the one
       # it was given, so the two cannot disagree about how long a run had.

@@ -730,3 +730,85 @@ func TestACataloguedDefaultIsTheOneTheCodeApplies(t *testing.T) {
 			"catalogued setting. It is not protecting the field it was written for", len(applied))
 	}
 }
+
+// TestEveryReadSettingIsCataloguedOrDeclaredUnreported walks the direction nothing walked, and it is the
+// direction a settings surface actually goes wrong in.
+//
+// ‼️ SIX SETTINGS WERE MISSING WHEN THIS WAS WRITTEN (2026-08-07): the five PALAI_BACKGROUND_* knobs and
+// PALAI_ALLOW_LOCAL_REPOSITORY. Every one is read by this process, and the catalogue's own first line calls
+// itself "the declared configuration of this process". TestEveryComposeSettingIsCataloguedOrDeclared-
+// Unreported walks compose.yaml → catalogue and TestEveryCatalogueCitationResolvesToARealReader walks
+// catalogue → reader; neither could see a variable this process reads that compose does not set, which is
+// precisely what those six were. A sweep only ever looks one way.
+//
+// WHY IT WAS QUIET: all six are documented in docs/operations/background-execution.md. An operator reading
+// the PAGE finds them; an operator reading the PANEL does not — and the panel is what a hosted customer has.
+//
+// THE THREE EXITS ARE THE ONES THIS SURFACE ALREADY HAD: a catalogue entry, an unreportedSettings reason,
+// or credentialBearingEnv (a value that may never be reported at all). A name needs one of the three, and
+// each is a sentence somebody had to write — which is the point, because an exemption nobody has to justify
+// is a place to hide a setting.
+func TestEveryReadSettingIsCataloguedOrDeclaredUnreported(t *testing.T) {
+	root := repoRootFromTest(t)
+	catalogued := map[string]bool{}
+	for _, entry := range deploymentCatalogue {
+		catalogued[entry.Name] = true
+	}
+	credential := map[string]bool{}
+	for _, name := range credentialBearingEnv {
+		credential[name] = true
+	}
+
+	literal := regexp.MustCompile(`"(PALAI_[A-Z0-9_]+)"`)
+	read := map[string][]string{}
+	walkErr := filepath.Walk(filepath.Join(root, "apps/control-plane"), func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		switch {
+		case info.IsDir(), !strings.HasSuffix(path, ".go"), strings.HasSuffix(path, "_test.go"):
+			return nil
+		// The catalogue files name every setting by construction; reading them back would make this test
+		// assert that the catalogue contains itself.
+		case strings.HasSuffix(path, "deployment.go"), strings.HasSuffix(path, "deployment_desired.go"):
+			return nil
+		}
+		src, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		rel := strings.TrimPrefix(path, root+"/")
+		for _, m := range literal.FindAllStringSubmatch(string(src), -1) {
+			read[m[1]] = append(read[m[1]], rel)
+		}
+		return nil
+	})
+	if walkErr != nil {
+		t.Fatalf("walk apps/control-plane: %v", walkErr)
+	}
+
+	// NON-VACUITY: a walk that found nothing would pass, and so would one whose regexp stopped matching.
+	if len(read) < 40 {
+		t.Fatalf("the walk found %d PALAI_ setting(s) read outside the catalogue files, want at least 40 — the "+
+			"parse is broken and every name below it would look covered", len(read))
+	}
+
+	var missing []string
+	for name, files := range read {
+		switch {
+		case catalogued[name], unreportedSettings[name] != "", credential[name]:
+			continue
+		// A PREFIX, not a setting: the code appends a ref to it (PALAI_INBOUND_SECRET_FILE_<REF>), so there
+		// is no fixed name for an operator to be told about and no value for a panel to show.
+		case strings.HasSuffix(name, "_FILE_"):
+			continue
+		}
+		missing = append(missing, name+" ("+files[0]+")")
+	}
+	sort.Strings(missing)
+	for _, name := range missing {
+		t.Errorf("%s is read by this process and the deployment surface neither reports it nor declares why "+
+			"it does not. Add a deploymentCatalogue entry, an unreportedSettings reason, or credentialBearingEnv "+
+			"if its VALUE is a credential — an operator cannot see a setting nobody decided about", name)
+	}
+}

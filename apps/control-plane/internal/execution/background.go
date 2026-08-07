@@ -57,7 +57,7 @@ const backgroundLogDir = ".palai-session/bg"
 // a failure. (E26 §3.5 P5, taken from the vendor's own CLAUDE_CODE_DISABLE_BACKGROUND_TASKS.)
 var errBackgroundDisabled = errors.New("background execution is disabled on this deployment (PALAI_BACKGROUND_DISABLED); the background parameter is refused rather than run synchronously")
 
-// backgroundDisabled reports the deployment kill switch, and it FAILS CLOSED on a value it cannot read:
+// BackgroundDisabled reports the deployment kill switch, and it FAILS CLOSED on a value it cannot read:
 // an operator who wrote `PALAI_BACKGROUND_DISABLED=yes` meant to switch the feature off, and answering
 // "that is not a boolean, so the feature stays on" would be the least useful reading available.
 //
@@ -65,7 +65,7 @@ var errBackgroundDisabled = errors.New("background execution is disabled on this
 // backgroundRunnerFor is a named function in main.go: a test that builds its own configuration never
 // exercises the configuration production builds, and this way the switch is reached through the
 // production path or not at all.
-func backgroundDisabled() bool {
+func BackgroundDisabled() bool {
 	raw := strings.TrimSpace(os.Getenv("PALAI_BACKGROUND_DISABLED"))
 	if raw == "" {
 		return false
@@ -76,7 +76,7 @@ func backgroundDisabled() bool {
 
 // THE FOUR CEILINGS OF E26 T5, AND WHY THEY ARE READ HERE RATHER THAN AT THE COMPOSITION ROOT.
 //
-// Every one of them is read per call, through the function production calls, for backgroundDisabled's
+// Every one of them is read per call, through the function production calls, for BackgroundDisabled's
 // reason: a test that builds its own configuration never exercises the configuration production builds.
 // The plan's seam line said "main.go (three env)"; three of these four are read at SPAWN time, inside the
 // dispatcher, and capturing them in main.go would have put production's own defaults out of reach of
@@ -102,7 +102,7 @@ const (
 	defaultBackgroundLogTTL = 24 * time.Hour
 )
 
-// backgroundMaxWallTime is the deployment's ceiling on a background task's life, and its `bounded` half
+// BackgroundMaxWallTime is the deployment's ceiling on a background task's life, and its `bounded` half
 // carries the one thing a duration cannot say: whether the operator ASKED for no ceiling.
 //
 // UNSET IS BOUNDED. `PALAI_BACKGROUND_MAX_WALL_TIME=0` is unbounded and has to be written, so the silent
@@ -112,7 +112,7 @@ const (
 // A VALUE THIS CANNOT PARSE FALLS BACK TO THE CEILING RATHER THAN TO INFINITY. An operator who typed
 // `60min` meant to bound something, and reading a typo as "run forever" is the least useful answer
 // available.
-func backgroundMaxWallTime() (limit time.Duration, bounded bool) {
+func BackgroundMaxWallTime() (limit time.Duration, bounded bool) {
 	raw := strings.TrimSpace(os.Getenv("PALAI_BACKGROUND_MAX_WALL_TIME"))
 	if raw == "" {
 		return defaultBackgroundMaxWallTime, true
@@ -131,13 +131,13 @@ func backgroundMaxWallTime() (limit time.Duration, bounded bool) {
 	return d, true
 }
 
-// backgroundMaxPerRun and backgroundMaxPerHost are §0.3's two ceilings. A non-positive value is an
+// BackgroundMaxPerRun and BackgroundMaxPerHost are §0.3's two ceilings. A non-positive value is an
 // explicit opt-out and means no ceiling — the same shape as the wall time's zero, and the same rule: the
 // unbounded reading requires a written value.
-func backgroundMaxPerRun() int {
+func BackgroundMaxPerRun() int {
 	return envCeiling("PALAI_BACKGROUND_MAX_PER_RUN", defaultBackgroundMaxPerRun)
 }
-func backgroundMaxPerHost() int {
+func BackgroundMaxPerHost() int {
 	return envCeiling("PALAI_BACKGROUND_MAX_PER_HOST", defaultBackgroundMaxPerHost)
 }
 
@@ -154,11 +154,11 @@ func envCeiling(name string, def int) int {
 	return n
 }
 
-// backgroundLogTTL bounds how long a finished task's output file stays on the allocation. Unset and
+// BackgroundLogTTL bounds how long a finished task's output file stays on the allocation. Unset and
 // unparseable both mean the 24h default: there is no opt-out spelling here, because the opt-out is an
 // unbounded `.palai-session` that Snapshot skips (§3.6 D7) and that therefore nobody would ever see fill
 // a disk. An operator who wants to keep logs longer writes a longer duration.
-func backgroundLogTTL() time.Duration {
+func BackgroundLogTTL() time.Duration {
 	raw := strings.TrimSpace(os.Getenv("PALAI_BACKGROUND_LOG_TTL"))
 	if raw == "" {
 		return defaultBackgroundLogTTL
@@ -210,7 +210,7 @@ var _ toolbroker.BackgroundTasks = (*backgroundTasks)(nil)
 // ORDER MATTERS AND IS THE POINT: the kill switch and the missing-runner refusal both happen BEFORE
 // anything is started, so a refused call leaves no process, no log file and no directory behind.
 func (b *backgroundTasks) StartBackground(ctx context.Context, cmd toolbroker.ShellCommand, callID contracts.ToolCallID) (toolbroker.BackgroundTicket, error) {
-	if backgroundDisabled() {
+	if BackgroundDisabled() {
 		return toolbroker.BackgroundTicket{}, errBackgroundDisabled
 	}
 	// THE GATE IS THE MACHINE NOW, NOT THIS PROCESS (A.3 T7). It used to ask whether the CONTROL PLANE
@@ -237,10 +237,10 @@ func (b *backgroundTasks) StartBackground(ctx context.Context, cmd toolbroker.Sh
 	if err != nil {
 		return toolbroker.BackgroundTicket{}, err
 	}
-	if limit := backgroundMaxPerRun(); limit > 0 && perRun >= limit {
+	if limit := BackgroundMaxPerRun(); limit > 0 && perRun >= limit {
 		return toolbroker.BackgroundTicket{}, fmt.Errorf("%w (%d of %d running)", errBackgroundAtRunCeiling, perRun, limit)
 	}
-	if limit := backgroundMaxPerHost(); limit > 0 && perHost >= limit {
+	if limit := BackgroundMaxPerHost(); limit > 0 && perHost >= limit {
 		return toolbroker.BackgroundTicket{}, fmt.Errorf("%w (%d of %d running)", errBackgroundAtHostCeiling, perHost, limit)
 	}
 
@@ -250,7 +250,7 @@ func (b *backgroundTasks) StartBackground(ctx context.Context, cmd toolbroker.Sh
 	// THE DEADLINE IS COMPUTED BEFORE THE PROCESS EXISTS so that the row can carry it in the same insert
 	// the handle arrives in. There is no window in which a running task has no ceiling recorded.
 	var deadline *time.Time
-	if limit, bounded := backgroundMaxWallTime(); bounded {
+	if limit, bounded := BackgroundMaxWallTime(); bounded {
 		at := time.Now().Add(limit)
 		deadline = &at
 	}
@@ -690,7 +690,7 @@ func (o *Orchestrator) expireBackgroundTask(ctx context.Context, task coordinato
 // KillDetached is a ContainerKill followed by a ContainerRemove, so a killed container leaves no writable
 // layer behind, and tests/component/background counts sandbox containers before and after to prove it.
 func sweepBackgroundLogs(ctx context.Context, store ReconcileStore) error {
-	ttl := backgroundLogTTL()
+	ttl := BackgroundLogTTL()
 	roots, live, err := store.BackgroundLogRetention(ctx)
 	if err != nil {
 		return err

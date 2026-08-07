@@ -357,7 +357,12 @@ func TestDesiredWriteAcceptsTheValuesAnOperatorActuallyTypes(t *testing.T) {
 		"PALAI_MODEL_PROVIDER":"provider-one",
 		"PALAI_MODEL":"gpt-4o-mini",
 		"PALAI_TOOL_ERROR_BUDGET":"32",
-		"PALAI_ENGINE_WALL_TIME":"8m"
+		"PALAI_ENGINE_WALL_TIME":"8m",
+		"PALAI_BACKGROUND_DISABLED":"false",
+		"PALAI_BACKGROUND_MAX_WALL_TIME":"60m",
+		"PALAI_BACKGROUND_MAX_PER_RUN":"5",
+		"PALAI_BACKGROUND_MAX_PER_HOST":"20",
+		"PALAI_BACKGROUND_LOG_TTL":"24h"
 	}}`
 	got, err := DecodeDesiredSettings([]byte(body))
 	if err != nil {

@@ -186,7 +186,13 @@ const (
 	// process is not running, and a deployment that went from "runs are slow" to "nothing runs at all".
 	// Refusing it at the door is the same rule the paragraph above states for `10min`.
 	desiredPositiveDuration = "positive duration"
-	desiredToken            = "token" // a bare identifier: see desiredTokenPattern
+	// desiredBool is strconv.ParseBool with the same round-trip discipline desiredInt has, and it exists
+	// because a kill switch whose reader FAILS CLOSED needs its refusals at the door rather than in the
+	// reader. BackgroundDisabled reads anything it cannot parse as "disabled" — the right answer for a value
+	// that arrived from an operator's own environment, and the wrong one for a panel: a stored `maybe` would
+	// switch the feature off while the screen showed `maybe`. Refusing it here keeps the two agreeing.
+	desiredBool  = "bool"
+	desiredToken = "token" // a bare identifier: see desiredTokenPattern
 )
 
 const (
@@ -554,6 +560,71 @@ var deploymentCatalogue = []catalogueEntry{
 		Effect:     "The host directory coding workspaces are allocated under. Its presence is what makes this deployment advertise the `workspaces` capability at all.",
 		Mutability: mutabilityBringUp, ChangeWith: changeCP,
 		ReaderFile: cpMain, ReaderFunc: "startDispatch",
+	},
+	// ‼️ THE BACKGROUND FAMILY AND THE LOCAL-CLONE SWITCH JOINED THIS LIST ON 2026-08-07, AND THEIR ABSENCE
+	// WAS NOT A DECISION. This catalogue's own first line calls itself "the declared configuration of this
+	// process", and this process read all six — `grep '"PALAI_"' apps/control-plane/ --exclude=deployment*.go`
+	// vs the entries here: six names the code reads and the operator's screen never showed. They are
+	// documented in docs/operations/background-execution.md, which is what made the gap quiet: an operator
+	// reading the PAGE finds them and an operator reading the PANEL does not, and the panel is what a hosted
+	// customer has. TestEveryReadSettingIsCataloguedOrDeclaredUnreported now walks this direction so the
+	// seventh cannot arrive the same way.
+	{
+		Name: "PALAI_ALLOW_LOCAL_REPOSITORY", Group: "execution", Kind: kindValue, Default: "unset — http/https only",
+		Effect: "Set to ANY non-empty value, a repository binding may name a clone_url on a LOCAL transport " +
+			"(file://, a bare path, ssh) instead of the http/https this endpoint otherwise requires. It is a " +
+			"dev/test affordance and it widens what a binding can point at: on a stack that has it, a binding " +
+			"can name a path on the control plane's own disk. It is catalogued for exactly that reason — a " +
+			"switch that relaxes a boundary belongs where an operator can see whether it is on.",
+		Mutability: mutabilityBringUp, ChangeWith: changeCP,
+		ReaderFile: "apps/control-plane/api/repository_bindings.go", ReaderFunc: "allowedCloneScheme",
+	},
+	{
+		Name: "PALAI_BACKGROUND_DISABLED", Group: "execution", Kind: kindValue, Default: "unset — background execution is on",
+		Effect: "The deployment kill switch for background execution. With it set, a tool call asking for " +
+			"`background:true` is REFUSED rather than quietly run in the foreground — a model that believes it " +
+			"backgrounded a command and is then blocked by it is the exact behaviour the feature exists to " +
+			"avoid. It FAILS CLOSED on a value it cannot read: an operator who wrote `yes` meant off.",
+		DesiredValue: desiredBool,
+		Mutability:   mutabilityBringUp, ChangeWith: changeCP,
+		ReaderFile: "apps/control-plane/internal/execution/background.go", ReaderFunc: "BackgroundDisabled",
+	},
+	{
+		Name: "PALAI_BACKGROUND_MAX_WALL_TIME", Group: "execution", Kind: kindValue, Default: "60m",
+		Effect: "How long a background task may run before it is killed, marked expired and reported to the " +
+			"model. A non-positive value is an explicit opt-out and means unbounded; a value that does not " +
+			"parse falls back to this ceiling rather than to infinity, because an operator who typed `60min` " +
+			"meant to bound something.",
+		DesiredValue: desiredDuration,
+		Mutability:   mutabilityBringUp, ChangeWith: changeCP,
+		ReaderFile: "apps/control-plane/internal/execution/background.go", ReaderFunc: "BackgroundMaxWallTime",
+	},
+	{
+		Name: "PALAI_BACKGROUND_MAX_PER_RUN", Group: "execution", Kind: kindValue, Default: "5",
+		Effect: "How many background tasks one RUN may have live at once. The next spawn is REFUSED, not " +
+			"queued — five parallel builds is the most a model can follow, and a sixth is a signal rather than " +
+			"a workload. A non-positive value is an explicit opt-out and means no ceiling.",
+		DesiredValue: desiredInt,
+		Mutability:   mutabilityBringUp, ChangeWith: changeCP,
+		ReaderFile: "apps/control-plane/internal/execution/background.go", ReaderFunc: "BackgroundMaxPerRun",
+	},
+	{
+		Name: "PALAI_BACKGROUND_MAX_PER_HOST", Group: "execution", Kind: kindValue, Default: "20",
+		Effect: "How many background tasks this control plane may have live at once across every run. The " +
+			"per-run ceiling bounds one conversation; this one bounds the machine. A non-positive value is an " +
+			"explicit opt-out and means no ceiling.",
+		DesiredValue: desiredInt,
+		Mutability:   mutabilityBringUp, ChangeWith: changeCP,
+		ReaderFile: "apps/control-plane/internal/execution/background.go", ReaderFunc: "BackgroundMaxPerHost",
+	},
+	{
+		Name: "PALAI_BACKGROUND_LOG_TTL", Group: "retention", Kind: kindValue, Default: "24h",
+		Effect: "How long a FINISHED background task's log is kept before it is deleted; a running task's log " +
+			"is never swept. There is no opt-out spelling — an unparseable or non-positive value means the " +
+			"default, and an operator who wants logs kept longer writes a longer duration.",
+		DesiredValue: desiredPositiveDuration,
+		Mutability:   mutabilityBringUp, ChangeWith: changeCP,
+		ReaderFile: "apps/control-plane/internal/execution/background.go", ReaderFunc: "BackgroundLogTTL",
 	},
 	{
 		Name: "PALAI_WORKSPACE_IDLE_TTL", Group: "execution", Kind: kindValue, Default: "5m",
@@ -1337,6 +1408,14 @@ var nonDesiredReason = map[string]string{
 	// CONTAINERISED control plane too, which widens the posture to every compose deployment — where the
 	// container IS the boundary being removed. That is a different risk from a Mac deliberately brought up
 	// native, and whoever lifts this must decide it deliberately rather than inherit it from a guard.
+	// SAME FAMILY AS THE ROW BELOW, and the same reason it is a sentence rather than a form: it WIDENS what a
+	// repository binding may point at. With it set, a clone_url may name a local transport — a path on this
+	// process's own disk — instead of the http/https the endpoint otherwise requires. It is a dev/test
+	// affordance, and a panel control that relaxes a boundary is the friction this surface deliberately keeps.
+	"PALAI_ALLOW_LOCAL_REPOSITORY": "it WIDENS a boundary — any non-empty value lets a repository binding name a " +
+		"clone_url on a local transport (file://, a bare path) instead of http/https, which on a hosted plane means " +
+		"a binding can point at the control plane's own disk. It is a dev/test affordance and it is set on the " +
+		"machine, deliberately, not from a form.",
 	"PALAI_SHELL_NATIVE": "it DELETES a security boundary — the exact words `unsandboxed-host` run every shell command on this " +
 		"machine as this uid with no container, no network denial and no resource bound. deployment.go's own entry says the value is a " +
 		"sentence rather than a `1` so that removing the boundary is not reachable by the reflex that switches a feature on; putting it " +

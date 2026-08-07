@@ -537,6 +537,51 @@ func TestEveryDesiredValueThisBinaryAcceptsIsParsedByItsOwnReader(t *testing.T) 
 			// "15 minutes" would turn the queue deadline off while the panel reported fifteen minutes.
 			refused: map[string]string{"15 minutes": "0s", "15": "0s", "10min": "0s"},
 		},
+		// ‼️ THE FIVE BACKGROUND ROWS READ THROUGH internal/execution RATHER THAN THROUGH A HELPER IN THIS
+		// FILE, and that is the whole reason the readers were exported on 2026-08-07. Their values are read
+		// PER CALL inside the dispatcher, not captured at the composition root, so there was no exported
+		// accessor this round trip could drive — and a setting the panel may write with nothing proving the
+		// panel and the process agree is exactly what this test exists to forbid.
+		{
+			setting:  "PALAI_BACKGROUND_DISABLED",
+			read:     func() string { return strconv.FormatBool(execution.BackgroundDisabled()) },
+			accepted: map[string]string{"true": "true", "false": "false"},
+			// EVERY REFUSAL HERE READS AS `true`, WHICH IS THE POINT. The reader fails closed: anything it
+			// cannot parse switches the feature OFF. That is right for a value an operator exported on the
+			// machine and wrong for one a form stored — the panel would show `maybe` while background
+			// execution was disabled — so the grammar refuses at the door and the reader keeps the last word.
+			refused: map[string]string{"maybe": "true", "yes": "true", "TRUE": "true", "1": "true", "": "false"},
+		},
+		{
+			setting: "PALAI_BACKGROUND_MAX_WALL_TIME",
+			read:    func() string { d, _ := execution.BackgroundMaxWallTime(); return d.String() },
+			// `0` is accepted deliberately: for THIS bound zero is a written opt-out meaning unbounded, and the
+			// reader honours it. That is why the grammar is desiredDuration and not desiredPositiveDuration.
+			accepted: map[string]string{"60m": "1h0m0s", "30m": "30m0s", "0s": "0s"},
+			// A value the reader cannot parse falls back to the 60m CEILING rather than to infinity, so a
+			// stored `60min` would run an hour while the panel claimed sixty minutes of something else.
+			refused: map[string]string{"60min": "1h0m0s", "1 hour": "1h0m0s", "3600": "1h0m0s"},
+		},
+		{
+			setting:  "PALAI_BACKGROUND_MAX_PER_RUN",
+			read:     func() string { return strconv.Itoa(execution.BackgroundMaxPerRun()) },
+			accepted: map[string]string{"5": "5", "1": "1", "0": "0"},
+			refused:  map[string]string{"five": "5", "+5": "5", " 5": "5"},
+		},
+		{
+			setting:  "PALAI_BACKGROUND_MAX_PER_HOST",
+			read:     func() string { return strconv.Itoa(execution.BackgroundMaxPerHost()) },
+			accepted: map[string]string{"20": "20", "1": "1", "0": "0"},
+			refused:  map[string]string{"twenty": "20", "20 ": "20"},
+		},
+		{
+			setting: "PALAI_BACKGROUND_LOG_TTL",
+			read:    func() string { return execution.BackgroundLogTTL().String() },
+			// NO OPT-OUT SPELLING, which is why the grammar is desiredPositiveDuration: the reader treats a
+			// non-positive value as "use the default", so a stored `0s` would show zero and keep logs a day.
+			accepted: map[string]string{"24h": "24h0m0s", "1h": "1h0m0s"},
+			refused:  map[string]string{"0s": "24h0m0s", "24 hours": "24h0m0s", "1d": "24h0m0s"},
+		},
 		{
 			setting: "PALAI_FLEET_PARK_TTL",
 			read:    func() string { return envDuration("PALAI_FLEET_PARK_TTL").String() },
