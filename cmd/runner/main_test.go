@@ -1,8 +1,12 @@
 package main
 
 import (
+	"context"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestThePlaneWinsOverTheBoxsOwnEnvironment is the runner half of the desired-configuration round trip, and
@@ -193,4 +197,41 @@ func TestOneAddressDerivesWhatFourVariablesUsedToCarry(t *testing.T) {
 			t.Fatalf("id = %q, want the explicit value", got)
 		}
 	})
+}
+
+// TestTheDeviceBinaryAnswersVersionInsteadOfBecomingAnAgent — THE INSTALLER RUNS THIS BINARY, AND
+// EVERYTHING THAT IS NOT A SUBCOMMAND IS THE AGENT.
+//
+// install.sh decides whether it already has the build it is about to write by running
+// `"$dest" --version` and comparing. Everything after the subcommand dispatch in main is the agent,
+// which runs until it is stopped — so a binary that fell through on `--version` started a SECOND agent
+// and never returned, and the installer hung mid-line. The first install on a machine worked because
+// there was nothing to probe; every re-install after it hung, which is the shape a provisioner meets on
+// its second boot rather than its first. Measured on a real Mac on 2026-08-07.
+func TestTheDeviceBinaryAnswersVersionInsteadOfBecomingAnAgent(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "palai")
+	build := exec.Command("go", "build", "-o", bin, ".")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build the device binary: %v\n%s", err, out)
+	}
+	// The FLAGS install.sh could plausibly use, all three, because the installer is a shell script this
+	// package does not own and a contract that holds for one spelling is not a contract.
+	for _, flag := range []string{"--version", "-version", "version"} {
+		t.Run(flag, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			out, err := exec.CommandContext(ctx, bin, flag).CombinedOutput()
+			if ctx.Err() != nil {
+				t.Fatalf("`palai %s` did not return — it fell through to the agent, and an installer probing "+
+					"this binary hangs forever", flag)
+			}
+			if err != nil {
+				t.Fatalf("`palai %s` failed: %v\n%s", flag, err, out)
+			}
+			if strings.TrimSpace(string(out)) == "" {
+				t.Fatalf("`palai %s` printed nothing — install.sh compares this to a version and would "+
+					"reinstall on every boot", flag)
+			}
+		})
+	}
 }

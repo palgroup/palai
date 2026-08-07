@@ -43,6 +43,20 @@ func main() {
 	// and durable identity, installs the service, and returns; everything below is the AGENT, which is
 	// what the service then runs. A device artifact carries exactly these two behaviours — no `up`, no
 	// admin verb, no stack (plan §3.7).
+	// ‼️ `--version` ANSWERS AND EXITS, and it has to, because install.sh RUNS THIS BINARY to decide
+	// whether it already has the build it is about to write:
+	//
+	//   if [ -x "$dest" ] && [ "$("$dest" --version …)" = "$version" ]; then … already installed …
+	//
+	// Everything below this dispatch is the AGENT, which runs until it is stopped. So a binary that fell
+	// through on `--version` did not print a version — it STARTED A SECOND AGENT and never returned, and
+	// the installer hung with a partial line on screen. The first install on a machine worked (nothing to
+	// probe) and every re-install after it hung, which is the shape a provisioner meets on its second
+	// boot rather than its first.
+	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-version" || os.Args[1] == "version") {
+		fmt.Println(version.Resolve())
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "enroll" {
 		if err := runEnroll(ctx, os.Args[2:], os.Stdout); err != nil {
 			log.Fatalf("%v", err)
