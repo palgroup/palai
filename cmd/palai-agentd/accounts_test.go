@@ -100,8 +100,12 @@ func newTestAccounts(t *testing.T, rec *recordingRun) *SysadminctlAccounts {
 		foldersRoot:  t.TempDir(),
 		messagesRoot: t.TempDir(),
 		hostUUID:     func(context.Context) (string, error) { return testHostUUID, nil },
-		now:          func() time.Time { return time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC) },
-		goos:         "darwin",
+		// The settle a delete spends after signalling the account's processes. Substituted so the shipped
+		// value is driven without being waited out — never shortened in production, where a signal that
+		// has not landed is the race the settle exists for.
+		sleep: func(time.Duration) {},
+		now:   func() time.Time { return time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC) },
+		goos:  "darwin",
 	}
 }
 
@@ -857,5 +861,45 @@ func TestACreatorThatWritesAnotherUidIsREFUSED(t *testing.T) {
 		if call[0] == "createhomedir" {
 			t.Error("the home directory was populated for an account with the wrong uid: the refusal must come first")
 		}
+	}
+}
+
+// TestDeleteStopsTheAccountsProcessesBeforeRemovingItsRecord — THERE IS ALWAYS A PROCESS HOLDING THIS
+// uid, BY CONSTRUCTION.
+//
+// A session worker lives exactly as long as the account it is: no idle exit, deliberately, because
+// nothing on the control-plane side could start a second one. So at delete time this uid is held, and
+// removing a record out from under a running process leaves a live uid with no name. That is both a
+// leak and the most likely reading of what this Mac produced on 2026-08-08 — `sysadminctl reported
+// success but the record for palai-s01 still exists`.
+func TestDeleteStopsTheAccountsProcessesBeforeRemovingItsRecord(t *testing.T) {
+	rec := deleteScript(goodMarker())
+	rec.answers["pkill -TERM -u 707"] = ""
+	rec.answers["pkill -KILL -u 707"] = ""
+	a := newTestAccounts(t, rec)
+
+	if _, _, err := a.Delete(context.Background(), 7); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	killedAt, deletedAt := -1, -1
+	for i, call := range rec.calls {
+		switch joined := strings.Join(call, " "); {
+		case joined == "pkill -TERM -u 707" && killedAt < 0:
+			killedAt = i
+		case joined == "dscl . -delete /Users/palai-s07":
+			deletedAt = i
+		}
+	}
+	if killedAt < 0 {
+		t.Fatal("nothing signalled the account's processes: its session worker holds this uid, and the " +
+			"record would be deleted out from under a live process")
+	}
+	if deletedAt < 0 {
+		t.Fatal("the record was never deleted")
+	}
+	if killedAt > deletedAt {
+		t.Errorf("the processes were signalled at call %d and the record deleted at %d: a uid whose name is "+
+			"already gone is one no later reconciliation can name", killedAt, deletedAt)
 	}
 }

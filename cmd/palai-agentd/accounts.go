@@ -109,6 +109,9 @@ type SysadminctlAccounts struct {
 	// hostUUID identifies this Mac, binding a marker to it.
 	hostUUID func(ctx context.Context) (string, error)
 	now      func() time.Time
+	// sleep is time.Sleep in production. It is a field so a test can drive the shipped settle without
+	// spending it, which is the same reason macagent.Prober carries one.
+	sleep func(time.Duration)
 	// goos is runtime.GOOS in production. It is a field because the refusal on a non-Mac is behaviour
 	// worth testing, and CI runs on Linux.
 	goos string
@@ -164,6 +167,11 @@ func lookupUserName(uid int) (string, error) {
 	}
 	return u.Username, nil
 }
+
+// accountReapSettle is how long a delete waits between signalling an account's processes and removing
+// its record. Short, because the only process there by construction is a session worker, and a worker
+// that has been asked to stop closes a listener and returns.
+const accountReapSettle = 500 * time.Millisecond
 
 func runArgv(ctx context.Context, name string, args ...string) (string, error) {
 	out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
@@ -490,10 +498,18 @@ func (a *SysadminctlAccounts) Create(ctx context.Context, slot int) (string, str
 		return "", "", macagent.Errorf(macagent.ClassInternal,
 			"created %s but %s is not a directory, so this session has nowhere to run; delete the slot before retrying", name, home)
 	}
-	// The default is drwxr-x--- with group staff, which lets every other session traverse the top level
-	// of this one. 700 is the first thing to fix on a shared Mac.
-	if err := os.Chmod(home, 0o700); err != nil {
-		return "", "", macagent.Errorf(macagent.ClassInternal, "tightening %s to 0700 failed: %v", home, err)
+	// ‼️ 0710 AND NOT 0700, AND THE ONE BIT IS LOAD-BEARING. The default createhomedir leaves is
+	// drwxr-x--- with group `staff`, which lets every other account on the Mac traverse and READ this
+	// one — the first thing to fix on a shared machine. But the group is this slot's own group now, and
+	// its other member is the control plane, which has to reach ONE thing inside: the session worker's
+	// socket (macagent.WorkerSocket). 0700 makes that socket unreachable, which is a machine that mints
+	// accounts and cannot run a single command as one.
+	//
+	// x WITHOUT r IS THE WHOLE POINT: the control plane can traverse to a path it already knows and
+	// cannot LIST the account's home. And no other session is in this group, so for every other tenant
+	// on the machine the answer is still nothing at all.
+	if err := os.Chmod(home, 0o710); err != nil {
+		return "", "", macagent.Errorf(macagent.ClassInternal, "tightening %s to 0710 failed: %v", home, err)
 	}
 	return name, home, nil
 }
@@ -536,6 +552,28 @@ func (a *SysadminctlAccounts) Delete(ctx context.Context, slot int) (string, str
 	// same call, so a home that could not be removed and a record that could not be deleted arrived as
 	// one opaque exit code. Deleting the record first is also the safer order: a record that is gone
 	// cannot be logged into while its home is being removed.
+	// ‼️ THE ACCOUNT'S PROCESSES GO FIRST, AND THE SESSION WORKER IS ALWAYS ONE OF THEM. A worker lives
+	// exactly as long as the account it is — there is no idle exit, deliberately, because nothing on the
+	// control-plane side could start a second one — so at this point there is a process holding this uid
+	// by construction. Deleting a record out from under a running process leaves a live uid with no
+	// name, which is both a leak and the most likely reading of what was measured on this Mac on
+	// 2026-08-08: `sysadminctl reported success but the record for palai-s01 still exists`.
+	//
+	// SIGTERM AND THEN SIGKILL, because a worker that is mid-command should be allowed to finish writing
+	// what it has; and `pkill -u` rather than a pid table for the reason the group check is a dial —
+	// the kernel knows which processes hold this uid and this daemon does not.
+	killed := false
+	for _, signal := range []string{"-TERM", "-KILL"} {
+		if _, err := a.run(ctx, "pkill", signal, "-u", strconv.Itoa(rec.uid)); err == nil {
+			killed = true
+		}
+	}
+	if killed {
+		// One settle, because a signal is a request and `dscl -delete` on a uid whose processes are still
+		// exiting is the race this whole paragraph is about.
+		a.sleep(accountReapSettle)
+	}
+
 	if out, err := a.run(ctx, "dscl", ".", "-delete", "/Users/"+name); err != nil {
 		return "", "", macagent.Errorf(macagent.ClassInternal, "deleting the record for %s failed: %v: %s", name, err, strings.TrimSpace(out))
 	}

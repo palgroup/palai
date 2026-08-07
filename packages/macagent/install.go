@@ -33,6 +33,16 @@ type Install struct {
 	Run Runner
 	// Source is the palai-agentd build to install — a darwin binary this process can read.
 	Source string
+	// WorkerSource is the palai-session-worker build to install at [InstalledWorkerPath], and it is a
+	// SEPARATE input rather than a sibling derived from Source's directory.
+	//
+	// ‼️ AN INSTALL WITHOUT IT PRODUCES A MACHINE WHOSE ACCOUNTS ARE REAL AND WHOSE COMMANDS RUN
+	// NOWHERE. The daemon mints the uid, the workspace is handed to it, and then every command refuses:
+	// only uid 0 may become another uid and the control plane is the operator, so the worker is the one
+	// thing that can run a tenant's work as the tenant. Empty is permitted — a container-posture Mac
+	// installs the daemon for nothing else — and [Health.Worker] reports which of the two happened, so
+	// "no worker was installed" is never something an operator has to infer from a failing session.
+	WorkerSource string
 	// Plist is the launchd job description to write at [LaunchDaemonPlistPath]. It is bytes rather than
 	// a path because the binary that installs may be a packaged one with no source tree behind it.
 	Plist []byte
@@ -119,6 +129,18 @@ func (i Install) Apply(ctx context.Context) (Health, error) {
 		return Health{}, err
 	}
 
+	// 1b. The session worker, on exactly the same terms and for a sharper reason. It is started BY root
+	//     AT a tenant's uid, so a copy that any session account could write is a copy slot 07 can
+	//     replace before slot 08's session runs it — SysadminctlAccounts.requireSafeWorker refuses a
+	//     group- or world-writable one at spawn time, and this is the step that makes that refusal
+	//     never fire.
+	worker := strings.TrimSpace(i.WorkerSource)
+	if worker != "" {
+		if err := step(installBinaryPath, "-o", "root", "-g", "wheel", "-m", "0755", worker, InstalledWorkerPath); err != nil {
+			return Health{}, err
+		}
+	}
+
 	// 2. The group, and then the one member. `-o read` first because `-o create` fails on a group that
 	//    already exists, which is the ordinary case on every re-run and every upgrade — an install that
 	//    is not idempotent is one an operator only ever runs successfully once.
@@ -174,6 +196,13 @@ func (i Install) Apply(ctx context.Context) (Health, error) {
 	// 5. AND MEASURE IT. The probe retries, so the daemon binding its socket a moment after launchd
 	//    forks it is not a failure — which is the same window a cold boot opens, met here on purpose.
 	health, err := i.Verify.Probe(ctx)
+	// ‼️ THE WORKER IS MEASURED ON DISK, NOT INFERRED FROM WorkerSource. An install that was GIVEN a
+	// worker and whose copy did not land is exactly the machine this reports honestly about, and the
+	// only way to tell it from one that was given none is to look. Reported even when the probe failed,
+	// because an operator reading a failure needs to know which halves are in place.
+	if _, serr := os.Stat(InstalledWorkerPath); serr == nil {
+		health.Worker = true
+	}
 	if err != nil {
 		return health, fmt.Errorf("palai-agentd was installed and launchd was asked to start it, but its socket never answered: %w", err)
 	}

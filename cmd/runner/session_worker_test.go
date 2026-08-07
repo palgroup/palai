@@ -72,7 +72,14 @@ func TestTheMachineRunnerIsNotSpawnedAsASessionAccount(t *testing.T) {
 			t.Fatal("the scan found no macagent reference at all in cmd/runner or packages/runner, so it " +
 				"asserts nothing about VerbSpawn either")
 		}
-		for _, name := range []string{"VerbSpawn", "OKSpawn", "InstalledWorkerPath"} {
+		// ‼️ THE VERBS, AND NOT THE PATH. InstalledWorkerPath was on this list until 2026-08-08, and
+		// narrowing it is a change of SELECTOR and not of rule: the property is that the process which
+		// enrols this box never runs as a session account, and PLACING a program is not RUNNING as it.
+		// `palai agentd install` lays down the worker beside the daemon — the same privileged step, on
+		// the same machine, by the same operator — and then says whether it landed, because a machine
+		// with a daemon and no worker mints accounts whose every command refuses. Spawning is what must
+		// stay out of this binary, and spawning is exactly what these two names are.
+		for _, name := range []string{"VerbSpawn", "OKSpawn"} {
 			if found[name] {
 				t.Errorf("the machine runner references macagent.%s. The process that enrols this box must not "+
 					"be the process that holds a tenant's session.", name)

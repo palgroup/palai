@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"syscall"
+	"time"
 
 	"github.com/palgroup/palai/packages/macagent"
 )
@@ -130,6 +132,16 @@ func (a *SysadminctlAccounts) Spawn(ctx context.Context, slot int) (string, int,
 		return "", 0, err
 	}
 
+	// ‼️ ALREADY RUNNING IS THE OUTCOME THIS CALL WANTED, and it is MEASURED rather than remembered. A
+	// control plane that restarted holds no memory of which sessions have workers, so its next Acquire
+	// asks for one that is already there; a second worker would race the first for the same socket and
+	// the loser would take the account's commands with it. A pid table on this side would answer from
+	// memory the daemon might also have lost — so the question is put to the socket, which is the only
+	// thing that knows.
+	if live, lerr := a.workerAnswering(slot); lerr == nil && live {
+		return name, 0, nil
+	}
+
 	pid, err := a.spawn(ctx, sessionWorker{
 		Path: a.workerPath,
 		UID:  uid,
@@ -212,3 +224,23 @@ func startWorker(_ context.Context, w sessionWorker) (int, error) {
 	go func() { _ = cmd.Wait() }()
 	return cmd.Process.Pid, nil
 }
+
+// workerAnswering reports whether a worker is listening for this slot. A dial that connects is proof a
+// listener exists, which is precisely the claim this needs — unlike a probe of the daemon itself, where
+// the tree insists on a round trip, the question here is only "would a second worker collide".
+func (a *SysadminctlAccounts) workerAnswering(slot int) (bool, error) {
+	socket, err := macagent.WorkerSocket(slot)
+	if err != nil {
+		return false, err
+	}
+	conn, err := net.DialTimeout("unix", socket, workerDialProbe)
+	if err != nil {
+		return false, nil
+	}
+	_ = conn.Close()
+	return true, nil
+}
+
+// workerDialProbe bounds the collision check. It is short because the socket is on this machine's own
+// filesystem: anything slower than this is not a worker that is busy, it is one that is gone.
+const workerDialProbe = 500 * time.Millisecond

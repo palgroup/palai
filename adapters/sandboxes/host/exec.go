@@ -288,8 +288,21 @@ func (e *Executor) Run(ctx context.Context, cmd toolbroker.ShellCommand) (toolbr
 	// THE PRIVILEGE DROP IS RESOLVED BEFORE THE DIRECTORIES ARE MADE, because allowedEnv gives the ones
 	// it creates to the same account and a refusal after a chown would leave a tree half handed over.
 	procAttr, err := procAttrFor(cmd.RunAs, os.Geteuid())
-	if err != nil {
+	if err != nil && !errors.Is(err, ErrCannotDropPrivilege) {
 		return toolbroker.ShellResult{}, err
+	}
+	// ‼️ CANNOT DROP IS NOT THE END OF THE ROAD ANY MORE, AND THAT IS THE WHOLE POINT OF THE WORKER.
+	// Only uid 0 may become another uid, and this process is the operator — so for three months the
+	// Credential above was carried and never once spent, and a deployment that minted per-session
+	// accounts refused every command instead of running it anywhere. The session's work is meant to
+	// arrive ALREADY at its own uid: palai-agentd starts a worker as the account, and this forwards to
+	// it. Nothing drops into anything; the command is simply run by the process that is already there.
+	//
+	// A DEPLOYMENT WITH NO WORKER STILL GETS THE OLD REFUSAL, unchanged, and that is deliberate — the
+	// error below carries whatever the dial said, so "there is no worker for this session" is
+	// distinguishable from "this executor is not root", which are two different things to fix.
+	if err != nil {
+		return e.runThroughWorker(ctx, cmd, runArgv, err)
 	}
 
 	env, err := allowedEnv(cmd.WorkspaceRoot, cmd.RunAs)
@@ -407,9 +420,33 @@ func allowedEnv(workspaceRoot string, runAs *toolbroker.RunAs) ([]string, error)
 		if runAs == nil {
 			return nil
 		}
-		if err := os.Lchown(path, runAs.UID, runAs.GID); err != nil {
-			return fmt.Errorf("%w: giving per-session %s (%s) to uid %d: %v",
-				ErrCannotDropPrivilege, label, path, runAs.UID, err)
+		// ‼️ THE OWNER MOVES ONLY WHEN THIS PROCESS CAN MOVE IT, AND THAT IS ALMOST NEVER. Only uid 0 may
+		// give a file to another uid, so on every real deployment the lchown below is the branch that
+		// cannot be taken — this executor runs as the operator. It is kept for the root case (a control
+		// plane started by launchd as root, which the fault tier drives) because owner is the stronger
+		// grant of the two.
+		if os.Geteuid() == 0 {
+			if err := os.Lchown(path, runAs.UID, runAs.GID); err != nil {
+				return fmt.Errorf("%w: giving per-session %s (%s) to uid %d: %v",
+					ErrCannotDropPrivilege, label, path, runAs.UID, err)
+			}
+			return nil
+		}
+		// ‼️ OTHERWISE THE MODE, AND THE GROUP LOOKS AFTER ITSELF — MEASURED ON DARWIN 25.3.0 ON
+		// 2026-08-08. macOS keeps BSD semantics: a directory or file inherits the GROUP OF ITS PARENT,
+		// not the creating process's. A directory chgrp'd to gid 12 was given a child and a file inside
+		// it, and both came out gid 12 while the creating process's primary group was 20. These three
+		// directories are created inside the allocation, which palai-agentd's adopt has already put in
+		// the slot's own group — so they arrive in it, and nothing has to be given to anyone.
+		//
+		// WHAT DOES NOT LOOK AFTER ITSELF IS THE MODE. They are created 0700, and without the group bits
+		// the inherited group grants exactly nothing: the session account would have a HOME, a TMPDIR and
+		// a cache it cannot write, arriving one seam away from anything that names a uid. The setgid bit
+		// is set with them so the rule holds on a platform that does not inherit by default rather than
+		// resting on the measurement above.
+		if err := os.Chmod(path, 0o2770); err != nil {
+			return fmt.Errorf("%w: opening per-session %s (%s) to this session's group: %v",
+				ErrCannotDropPrivilege, label, path, err)
 		}
 		return nil
 	}

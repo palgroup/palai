@@ -42,6 +42,25 @@ func agentdSource() (string, error) {
 	return source, nil
 }
 
+// workerSource is the session worker beside this binary, or EMPTY when there is none.
+//
+// ‼️ ABSENT IS NOT AN ERROR AND THE ASYMMETRY WITH agentdSource IS DELIBERATE. A machine with no daemon
+// cannot open a session account at all, so that one refuses; a machine with a daemon and no worker can
+// still mint accounts, hand over workspaces and serve every non-shell tool — it simply cannot run a
+// command as the account. The install reports which of the two it produced (macagent.Health.Worker), so
+// the gap is stated at install time rather than discovered by a session an hour later.
+func workerSource() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	source := filepath.Join(filepath.Dir(exe), "palai-session-worker")
+	if _, err := os.Stat(source); err != nil {
+		return ""
+	}
+	return source
+}
+
 // installAgentd puts the account daemon on this machine and returns what it MEASURED off the socket,
 // never what it attempted. It is the ONE install path: `palai agentd install` calls it, and so does
 // `palai enroll`, because a device that enrols and cannot open a session account is a device that runs
@@ -64,12 +83,13 @@ func installAgentd(ctx context.Context, allocationRoot string) (macagent.Health,
 	// VerbAdopt gives <root>/slot-NN away. Two answers would be a chown of a directory nobody wrote to.
 	plist = bytes.ReplaceAll(plist, []byte("__PALAI_ALLOCATION_ROOT__"), []byte(allocationRoot))
 	return macagent.Install{
-		Elevation: macagent.DetectElevation(ctx, os.Geteuid, macagent.ExecRunner),
-		Run:       macagent.ExecRunner,
-		Source:    source,
-		Plist:     plist,
-		Verify:    macagent.NewProber(macagent.DefaultSocketPath),
-		TempDir:   os.TempDir(),
+		Elevation:    macagent.DetectElevation(ctx, os.Geteuid, macagent.ExecRunner),
+		Run:          macagent.ExecRunner,
+		Source:       source,
+		WorkerSource: workerSource(),
+		Plist:        plist,
+		Verify:       macagent.NewProber(macagent.DefaultSocketPath),
+		TempDir:      os.TempDir(),
 	}.Apply(ctx)
 }
 
@@ -86,6 +106,17 @@ func runAgentdInstall(ctx context.Context, out io.Writer) error {
 	}
 	fmt.Fprintf(out, "palai-agentd installed and answering on %s (version %s, %d session account(s) open)\n",
 		macagent.DefaultSocketPath, stampOrUnknown(health.Version), len(health.Slots))
+	// ‼️ SAID OUT LOUD, BECAUSE THE MACHINE IT DESCRIBES LOOKS INSTALLED. Without the worker every
+	// account this daemon mints is real and every command that session runs refuses: only uid 0 may
+	// become another uid, the control plane is the operator, and the worker is the one process that is
+	// already the tenant.
+	if health.Worker {
+		fmt.Fprintf(out, "session worker installed at %s; a session's commands run as that session's own account\n",
+			macagent.InstalledWorkerPath)
+	} else {
+		fmt.Fprintf(out, "NO session worker at %s: this machine can mint session accounts but cannot RUN anything as "+
+			"one — put palai-session-worker beside this binary and run this again\n", macagent.InstalledWorkerPath)
+	}
 	return nil
 }
 

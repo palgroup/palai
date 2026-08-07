@@ -3,6 +3,7 @@ package execution
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -141,6 +142,10 @@ type SlotAccounts struct {
 	// without a sudoers entry, which is also why the type is worth having: the mapping and the
 	// idempotence are the parts with behaviour, and neither needs root to be tested.
 	run func(ctx context.Context, verb string, slot int) error
+	// log is how this type says what it could not do — a machine with a daemon and no session worker,
+	// which is a real posture rather than a failure. A field so a test can read what an operator would
+	// have been told; nil falls back to the package logger.
+	log func(format string, args ...any)
 }
 
 // NewDaemonSessionAccounts wires the real privileged path: one line over palai-agentd's unix socket.
@@ -160,6 +165,7 @@ func NewDaemonSessionAccounts(socketPath string) *SlotAccounts {
 	return &SlotAccounts{
 		slots: map[string]int{},
 		held:  map[int]bool{},
+		log:   log.Printf,
 		run: func(ctx context.Context, verb string, slot int) error {
 			// The two verbs this type spends are the two the daemon admits for an account. A third
 			// spelling would be a request the daemon refuses on shape, which is the right answer but a
@@ -205,6 +211,17 @@ func NewDaemonSessionAccounts(socketPath string) *SlotAccounts {
 // accountFor builds the identity of a slot. The name comes from the formatter this type was built with
 // (production and test spell it the same way); the uid and gid are ARITHMETIC, from the one place that
 // owns the namespace, so the pair cannot drift from the account palai-agentd actually created.
+// logf is how this type says what it could not do. A field rather than a package-level log call so a
+// test can read what an operator would have been told, and never nil in production — see the
+// constructor.
+func (a *SlotAccounts) logf(format string, args ...any) {
+	if a.log == nil {
+		log.Printf(format, args...)
+		return
+	}
+	a.log(format, args...)
+}
+
 func (a *SlotAccounts) accountFor(slot int) (SessionAccount, error) {
 	uid, err := macagent.AccountUID(slot)
 	if err != nil {
@@ -271,6 +288,19 @@ func (a *SlotAccounts) Acquire(ctx context.Context, sessionID string) (SessionAc
 		delete(a.slots, sessionID)
 		a.mu.Unlock()
 		return SessionAccount{}, err
+	}
+	// ‼️ AND THE WORKER, WITHOUT WHICH THE ACCOUNT IS DECORATIVE. Only uid 0 may become another uid and
+	// this process is the operator, so nothing here can run a command as the account it just minted —
+	// the shell executor carried a credential for three months and never once spent it. The daemon
+	// starts a process that IS the account, and every command this session runs is forwarded to it.
+	//
+	// A FAILURE HERE IS NOT FATAL TO THE ACQUIRE, and the asymmetry is deliberate. A machine with no
+	// worker installed still serves every tool that is not a shell — the file tools, the workspace
+	// reads, the diff — and refusing the whole session would take those away too. What must not happen
+	// is silence: the shell path reports the missing worker in the same sentence as the privilege drop
+	// it could not make, so the gap is named where it is felt.
+	if err := a.run(ctx, "spawn", slot); err != nil {
+		a.logf("session %s: slot %02d has an account but no worker, so its shell commands will refuse: %v", sessionID, slot, err)
 	}
 	return a.accountFor(slot)
 }

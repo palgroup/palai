@@ -45,8 +45,11 @@ func TestSessionAccountsMapAllocationsOntoSlots(t *testing.T) {
 			t.Fatalf("both allocations got uid %d — two sessions sharing a uid is the collision the accounts "+
 				"exist to prevent", first.UID)
 		}
-		if len(*calls) != 2 {
-			t.Fatalf("privileged calls = %v, want one create each", *calls)
+		// COUNTED BY VERB AND NOT BY LENGTH. An acquire is a create AND a spawn — the account and the
+		// process that IS it — so a raw count says nothing about the property, which is that each session
+		// consumes exactly one slot.
+		if got := countVerb(*calls, "create"); got != 2 {
+			t.Fatalf("privileged calls = %v: %d creates, want one per session", *calls, got)
 		}
 	})
 
@@ -63,8 +66,12 @@ func TestSessionAccountsMapAllocationsOntoSlots(t *testing.T) {
 		if again != first {
 			t.Fatalf("re-acquire gave %+v, want the same %+v", again, first)
 		}
-		if len(*calls) != 1 {
-			t.Fatalf("privileged calls = %v, want the second acquire to make none", *calls)
+		if got := countVerb(*calls, "create"); got != 1 {
+			t.Fatalf("privileged calls = %v: %d creates, want the second acquire to make none", *calls, got)
+		}
+		if got := countVerb(*calls, "spawn"); got != 1 {
+			t.Fatalf("privileged calls = %v: %d spawns, want the second acquire to start no second worker — "+
+				"two workers race for one socket and the loser takes the session's commands with it", *calls, got)
 		}
 	})
 
@@ -300,4 +307,16 @@ func TestATreeIsNeverHandedToNobody(t *testing.T) {
 	if err := HandTreeTo("", SessionAccount{Name: "palai-s01", UID: 701, GID: 20}); err == nil {
 		t.Fatal("an empty root was accepted")
 	}
+}
+
+// countVerb is how these assertions read the privileged calls: by VERB, because an acquire makes more
+// than one and a length is not a claim about any of them.
+func countVerb(calls []string, verb string) int {
+	n := 0
+	for _, call := range calls {
+		if call == verb {
+			n++
+		}
+	}
+	return n
 }

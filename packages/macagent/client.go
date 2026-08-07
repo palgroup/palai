@@ -185,6 +185,12 @@ type Health struct {
 	// indistinguishable from a machine that was already up.
 	Attempts int
 	Waited   time.Duration
+	// Worker is whether a session worker is installed at [InstalledWorkerPath], and it is on the HEALTH
+	// rather than left to be discovered because of what its absence produces: a machine whose accounts
+	// are minted, whose workspaces are handed over, and whose every command then refuses. That is a
+	// state an operator must be TOLD about at install time, not one they infer from a session that
+	// fails an hour later.
+	Worker bool
 }
 
 // Prober asks a daemon whether it is there, and keeps asking while the answer is "not yet".
