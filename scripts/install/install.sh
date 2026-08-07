@@ -150,8 +150,8 @@ main() {
 	esac
 
 	log "next: palai enroll --url <controller> --key-file <path>"
-	log "      one command: it enrols, installs the runner service, and on macOS installs palai-agentd"
-	log "      so the machine can open a per-session account. Run it as root; nothing asks again after."
+	log "      one command: it enrols, installs the service, and on macOS turns on per-session account"
+	log "      isolation. Run it with root once; nothing asks for a privilege again after it."
 }
 
 main "$@"
