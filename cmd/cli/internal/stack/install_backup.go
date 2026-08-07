@@ -86,16 +86,30 @@ var seedRows = map[string]string{
 
 // bootInfraTables are tenant-scoped tables a fresh boot fills on its own, so the empty-target gate
 // skips them — else a fresh target whose runner has already enrolled false-positives as "not empty"
-// and the restore is refused. Exactly three are skipped: `runners` (the runner registers itself),
-// `runner_pools` (seedTenant's default pool), and `runner_leases` (that runner takes a lease). None
-// of the three needs an operator to act.
+// and the restore is refused. Four are skipped: `runners` (the runner registers itself),
+// `runner_pools` (seedTenant's default pool), `runner_leases` (that runner takes a lease) and
+// `runner_enrollments` (the journal of that same registration). None of the four needs an operator
+// to act, which is what makes them boot infrastructure rather than tenant data.
 //
-// ponytail: `runner_enrollments` is written in the SAME transaction as `runners`
-// (internal/fleet/store.go AppendRunnerEnrollment) and is NOT skipped here, so a fresh target whose
-// runner enrolled reports `runner_enrollments=N` and the restore refuses. That is fail-closed — no
-// data is at risk — but it is a false refusal, and widening this set is a deliberate loosening of a
-// no-clobber gate, so it is recorded here rather than fixed in passing.
-var bootInfraTables = map[string]bool{"runners": true, "runner_pools": true, "runner_leases": true}
+// THE FOURTH WAS A RECORDED FALSE REFUSAL, AND WHAT IT COST WAS THE RESTORE PATH ITSELF. From
+// 2026-08-04 until 2026-08-07 the journal was counted, so `palai restore` refused every target whose
+// runner had enrolled — which is every target, seconds after bring-up. It was written down here as a
+// known false refusal and deferred; nothing measured what deferring it closed. TestDRDrills did, on
+// the first run after the note was three days old: `refusing to restore: target is not empty — holds
+// tenant data [runner_enrollments=1]`, and that list has exactly one entry, so the journal was the
+// only thing standing between a fresh install and a restore.
+//
+// Widening a no-clobber gate IS a loosening and needs an argument, so here is this one with the
+// commands that re-measure it. AppendRunnerEnrollment runs in the SAME transaction as the `runners`
+// INSERT (internal/fleet/store.go, keys.go), and nothing in the tree deletes a runner:
+// `grep -c 'DELETE FROM runners' storage/queries/runners.sql` → 0 (2026-08-07). A non-empty journal
+// therefore implies a non-empty `runners`, which this set already skips — so counting the journal
+// could only ever refuse a target that `runners` had already admitted. It protected nothing. The
+// protection that matters is unchanged and is what TestBuildExcessQuery pins: operator-provisioned
+// rows (projects, api_keys, secret_refs, model_routes, responses) are still counted in full.
+var bootInfraTables = map[string]bool{
+	"runners": true, "runner_pools": true, "runner_leases": true, "runner_enrollments": true,
+}
 
 // BackupManifest is the machine-readable index inside a backup archive. It records what the
 // backup captured (migration version, the tenant ids — which are the PROJECT ids since A.2 Task 6,

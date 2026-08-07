@@ -64,9 +64,18 @@ palai restore --archive palai-backup-<project>-<UTC>.tar.gz
 tenant-scoped table beyond a fresh install's baseline: not just extra runs, but a project, api-key,
 `secret_ref`, model-route, schedule, tool, etc. beyond the three rows a fresh install is seeded with
 (`prj_local`, `prin_local`, `key_local`). The gate enumerates the FORCE-RLS tables from the live
-catalog, excludes the four boot-seed identity rows and the runner-enrollment tables, and counts the
-rest; a non-empty result names the offending tables. A **freshly `init`ed, brought-up** stack passes;
-a stack that has been provisioned or used does not — no live data is ever overwritten.
+catalog, excludes those three seed rows by id and the four runner-plane tables a bring-up fills with
+no operator acting — `runners`, `runner_pools`, `runner_leases`, `runner_enrollments` — and counts
+the rest; a non-empty result names the offending tables. A **freshly `init`ed, brought-up** stack
+passes; a stack that has been provisioned or used does not — no live data is ever overwritten.
+
+> **Until 2026-08-07 that last sentence was false, and this page is where it hid.** The gate skipped
+> only three of the four runner-plane tables; `runner_enrollments` was counted, so a fresh target
+> refused with `holds tenant data [runner_enrollments=1]` seconds after bring-up — the moment its own
+> runner enrolled. The refusal was fail-closed, so no backup and no live data was ever at risk; what
+> it cost was restore itself. The sentence above was already written in its fixed form, which is why
+> naming the tables now matters more than counting them: "the runner-enrollment tables" read as true
+> against a set that was missing the table with that exact name.
 
 The writers are stopped **before** the gate runs (so a client write cannot slip in between the check
 and the swap); if the gate refuses, the writers are restarted and the target is left as it was. It

@@ -145,7 +145,10 @@ func TestBackupArchiveRejectsCorruptedMember(t *testing.T) {
 // The table list is what the LIVE catalog yields, so `organizations` is not in it: migration 000067
 // dropped the table. Feeding it anyway would assert a branch tenantDataExcess can no longer reach.
 func TestBuildExcessQuery(t *testing.T) {
-	q := buildExcessQuery([]string{"projects", "principals", "api_keys", "runners", "runner_leases", "secret_refs", "responses"})
+	q := buildExcessQuery([]string{
+		"projects", "principals", "api_keys", "secret_refs", "responses",
+		"runners", "runner_pools", "runner_leases", "runner_enrollments",
+	})
 	mustContain := []string{
 		"FROM projects WHERE id <> 'prj_local'",
 		"FROM principals WHERE id <> 'prin_local'",
@@ -159,9 +162,12 @@ func TestBuildExcessQuery(t *testing.T) {
 			t.Fatalf("query missing %q:\n%s", s, q)
 		}
 	}
-	// runner-enrollment tables fill on a fresh boot — they must NOT be counted (else a fresh target
-	// false-positives once the runner enrolls).
-	for _, banned := range []string{"FROM runners", "FROM runner_leases"} {
+	// The runner-plane tables fill on a fresh boot — they must NOT be counted, else a fresh target
+	// false-positives once the runner enrolls. ALL FOUR are driven here, and the fourth is why: while
+	// this list held only two of them, `runner_enrollments` was counted and `palai restore` refused
+	// every target whose runner had enrolled, which TestDRDrills is what finally measured. A skip set
+	// with members no test names is a skip set that grows a hole per member.
+	for _, banned := range []string{"FROM runners", "FROM runner_pools", "FROM runner_leases", "FROM runner_enrollments"} {
 		if strings.Contains(q, banned) {
 			t.Fatalf("query must skip boot-infra table but has %q:\n%s", banned, q)
 		}
