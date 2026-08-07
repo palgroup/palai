@@ -47,13 +47,8 @@ func TestSubcommandsHitCorrectEndpoint(t *testing.T) {
 		stdin                                string
 		wantMethod, wantPath, wantBodySubstr string
 	}{
-		{"project create", []string{"project", "create", "--display-name", "P"}, "", "POST", "/v1/projects", `"display_name":"P"`},
-		{"project list", []string{"project", "list"}, "", "GET", "/v1/projects", ""},
-		{"project get", []string{"project", "get", "prj_1"}, "", "GET", "/v1/projects/prj_1", ""},
-		{"project set-policy", []string{"project", "set-policy", "prj_1", "--allowed-models", "m1,m2"}, "", "PATCH", "/v1/projects/prj_1", `"allowed_models":["m1","m2"]`},
 		// --pool is E24's central knob and had no flag until T6 measured it while writing the operator page:
 		// `config_policy.pool` shipped on the endpoint (T2) and could only be set with a raw PATCH.
-		{"project set-policy pool", []string{"project", "set-policy", "prj_1", "--pool", "pool_mac"}, "", "PATCH", "/v1/projects/prj_1", `"pool":"pool_mac"`},
 		{"apikey create", []string{"apikey", "create", "--project", "prj_1", "--scope", "run"}, "", "POST", "/v1/api-keys", `"project_id":"prj_1"`},
 		{"apikey list", []string{"apikey", "list"}, "", "GET", "/v1/api-keys", ""},
 		{"apikey get", []string{"apikey", "get", "key_1"}, "", "GET", "/v1/api-keys/key_1", ""},
@@ -158,7 +153,7 @@ func TestProblemRender(t *testing.T) {
 	t.Setenv("PALAI_API_KEY", "k")
 
 	var out bytes.Buffer
-	err := Run("project", []string{"list"}, &out, strings.NewReader(""))
+	err := Run("pool", []string{"list"}, &out, strings.NewReader(""))
 	if err == nil {
 		t.Fatal("expected an error on 403")
 	}
@@ -170,7 +165,7 @@ func TestProblemRender(t *testing.T) {
 	}
 
 	var jout bytes.Buffer
-	err = Run("project", []string{"list", "--json"}, &jout, strings.NewReader(""))
+	err = Run("pool", []string{"list", "--json"}, &jout, strings.NewReader(""))
 	if err == nil {
 		t.Fatal("expected an error on 403 (json)")
 	}
@@ -237,7 +232,7 @@ func TestAPIKeyFileFlagReadsKeyFromFile(t *testing.T) {
 	t.Setenv("PALAI_API_KEY", "env-key")
 
 	var out bytes.Buffer
-	if err := Run("project", []string{"list", "--api-key-file", keyFile}, &out, strings.NewReader("")); err != nil {
+	if err := Run("pool", []string{"list", "--api-key-file", keyFile}, &out, strings.NewReader("")); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if cap.auth != "Bearer file-borne-key" {

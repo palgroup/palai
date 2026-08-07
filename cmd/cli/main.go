@@ -56,7 +56,7 @@ func dispatch(args []string) error {
 	// case, and printed `palai: usage: palai org <>` — a usage line with an EMPTY verb list, which tells an
 	// operator nothing and looks like a broken build. Falling through to the full usage below is the
 	// answer an unknown command already gets.
-	case "project", "apikey", "secret", "poolkey", "pool", "model":
+	case "apikey", "secret", "poolkey", "pool", "model":
 		return admin.Run(args[0], args[1:], os.Stdout, os.Stdin)
 	// `palai admin <resource> …` is the explicit spelling of the same family, and the machine lifecycle
 	// (E24 T5/T6) is reached ONLY this way — `palai admin runner approve|cordon|resume|revoke|list`. The prefix is not

@@ -73,15 +73,20 @@ ask"* and *"nothing is waiting"* are different answers.
 Which pool a project's runs go to is `config_policy.pool`:
 
 ```bash
-palai project set-policy prj_local --pool pool_mac
+curl -sS -X PATCH "$PALAI_BASE_URL/v1/projects/prj_local" -H "Authorization: Bearer $PALAI_API_KEY" \
+  -H 'content-type: application/json' -d '{"config_policy":{"pool":"pool_mac"}}'
 ```
 
-**`set-policy` REPLACES the whole policy document.** The write is an assignment, not a merge, so a call
-that names one flag clears every other key the policy carried — pass every flag you want to keep:
+**THE WRITE REPLACES THE WHOLE POLICY DOCUMENT.** `config_policy` is assigned, not merged, so a PATCH that
+names one key clears every other key the policy carried — send every key you want to keep. This mattered
+less when a CLI built the document from flags and it matters more now that you write the JSON yourself:
+read the policy back before you overwrite it.
 
 ```bash
-palai project set-policy prj_local --pool pool_mac --approvers key:ak_… --default-tools palai.workspace.shell
-palai project get prj_local                    # read it back; this is the only way to be sure
+curl -sS -X PATCH "$PALAI_BASE_URL/v1/projects/prj_local" -H "Authorization: Bearer $PALAI_API_KEY" \
+  -H 'content-type: application/json' \
+  -d '{"config_policy":{"pool":"pool_mac","approvers":["key:ak_…"],"default_tools":["palai.workspace.shell"]}}'
+curl -sS "$PALAI_BASE_URL/v1/projects/prj_local" -H "Authorization: Bearer $PALAI_API_KEY"   # read it back
 ```
 
 Resolution order, highest first: the run's own recorded pool (so a resumed run returns to the same
@@ -198,7 +203,8 @@ The capability is deliberately **`approve` and not `provision`**: `provision` ca
 it is checked against. A key that holds only `approve` can admit machines and can widen nothing.
 
 ```bash
-palai project set-policy prj_local --approvers key:ak_…      # then approve with THAT key
+curl -sS -X PATCH "$PALAI_BASE_URL/v1/projects/prj_local" -H "Authorization: Bearer $PALAI_API_KEY" \
+  -H 'content-type: application/json' -d '{"config_policy":{"approvers":["key:ak_…"]}}'   # then approve with THAT key
 ```
 
 **Two honest limits.**

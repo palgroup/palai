@@ -1,4 +1,4 @@
-// Package admin is the `palai org|project|apikey|secret|poolkey|runner` admin CLI: a thin authenticated
+// Package admin is the `palai apikey|secret|pool|poolkey|runner|model` admin CLI: a thin authenticated
 // HTTP client over the E13 provisioning + secret-ref APIs (router.go:152-187), the E24 runner-pool key
 // surface and the E24 T5 machine lifecycle. It adds NO server surface — every subcommand maps to one
 // existing endpoint. Until the E17 console it is the only human interface for tenancy admin (spec §47.6),
@@ -71,26 +71,21 @@ func Run(resource string, args []string, out io.Writer, in io.Reader) error {
 // flags holds every flag the four resources may register. Registration is per-resource, so an irrelevant
 // flag on the wrong resource is a parse error (a typo guard), while the value fields stay in one struct.
 type flags struct {
-	baseURL       string
-	apiKeyFile    string
-	ca            string
-	json          bool
-	displayName   string
-	project       string
-	scopes        multiFlag
-	expiresAt     string
-	allowedModels string
-	allowedTools  string
-	defaultTools  string
-	approvers     string
-	name          string
-	pool          string
-	posture       string
-	osName        string
-	arch          string
-	strict        bool
-	shared        bool
-	isolation     string
+	baseURL    string
+	apiKeyFile string
+	ca         string
+	json       bool
+	project    string
+	scopes     multiFlag
+	expiresAt  string
+	name       string
+	pool       string
+	posture    string
+	osName     string
+	arch       string
+	strict     bool
+	shared     bool
+	isolation  string
 	// The E29 model-wiring flags. Every one is a PUBLIC fact — a family name, a secret REF name, a URL, a
 	// model id. None can carry a credential, and admin_test.go's TestModelFlagsCarryNoCredential is what
 	// keeps the next one from doing so.
@@ -116,17 +111,6 @@ func (f *flags) register(fs *flag.FlagSet, resource string) {
 	fs.StringVar(&f.ca, "ca", "", "PEM CA file to trust for an https base URL (else $PALAI_CA_FILE) — e.g. the self-signed edge's ${PALAI_HOME}/ca/ca.crt")
 	fs.BoolVar(&f.json, "json", false, "emit the raw JSON response instead of a human render")
 	switch resource {
-	case "project":
-		fs.StringVar(&f.displayName, "display-name", "", "project display name (create)")
-		fs.StringVar(&f.allowedModels, "allowed-models", "", "comma-separated allowed models (set-policy)")
-		fs.StringVar(&f.allowedTools, "allowed-tools", "", "comma-separated allowed tools (set-policy)")
-		fs.StringVar(&f.defaultTools, "default-tools", "", "comma-separated default tools (set-policy)")
-		fs.StringVar(&f.approvers, "approvers", "", "comma-separated approver principals, slack:<team>:<user> or key:<api_key_id> (set-policy)")
-		// The runner pool this project's runs are placed in (E24 T2). MEASURED IN T6 WHILE WRITING THE
-		// OPERATOR PAGE: the field shipped on the API and there was no flag for it, so the epic's central
-		// knob could only be set with a raw PATCH — the same half-shipped shape T2 found on the endpoint
-		// itself, one layer up. `palai admin runner list` prints the pool ids to choose from.
-		fs.StringVar(&f.pool, "pool", "", "runner pool id this project's runs are placed in (set-policy)")
 	case "apikey":
 		fs.StringVar(&f.project, "project", "", "project id the key belongs to (create)")
 		fs.Var(&f.scopes, "scope", "capability scope (repeatable; omit for a full-capability admin key)")
@@ -253,43 +237,6 @@ func (c *Client) execute(resource, sub string, pos []string, f *flags) error {
 	// "request failed (HTTP 404): 404 page not found", which reads to an operator as a broken stack rather
 	// than as a command that no longer exists. `project` took over opening a tenant — it is what `org
 	// create` used to mean.
-	case "project":
-		switch sub {
-		case "create":
-			return c.do(http.MethodPost, "/v1/projects", body(map[string]any{"display_name": f.displayName}))
-		case "list":
-			return c.do(http.MethodGet, "/v1/projects", nil)
-		case "get":
-			return c.do(http.MethodGet, "/v1/projects/"+esc(pos[0]), nil)
-		case "set-policy":
-			policy := map[string]any{}
-			if f.allowedModels != "" {
-				policy["allowed_models"] = csv(f.allowedModels)
-			}
-			if f.allowedTools != "" {
-				policy["allowed_tools"] = csv(f.allowedTools)
-			}
-			if f.defaultTools != "" {
-				policy["default_tools"] = csv(f.defaultTools)
-			}
-			// The approver allow-list (E23 T2). Setting it turns the approve surfaces deny-by-default;
-			// leaving it unset keeps today's behaviour exactly. docs/operations/approvals.md.
-			if f.approvers != "" {
-				policy["approvers"] = csv(f.approvers)
-			}
-			// The runner pool (E24 T2). ONE id, not a list: a project's runs go to one posture.
-			if f.pool != "" {
-				policy["pool"] = strings.TrimSpace(f.pool)
-			}
-			if len(policy) == 0 {
-				return errors.New("set-policy requires at least one of --allowed-models/--allowed-tools/--default-tools/--approvers/--pool")
-			}
-			// THE WRITE REPLACES THE WHOLE DOCUMENT — `UpdateProjectConfigPolicy` is an assignment, not a
-			// merge — so a call that names one flag CLEARS every other key the policy carried. That is
-			// pre-existing behaviour and it is stated in docs/operations/runner-fleet.md §1 where an operator
-			// meets it, because the realistic accident is setting --pool and silently dropping --approvers.
-			return c.do(http.MethodPatch, "/v1/projects/"+esc(pos[0]), body(map[string]any{"config_policy": policy}))
-		}
 	case "apikey":
 		switch sub {
 		case "create":
@@ -759,7 +706,6 @@ func (c *Client) routeThroughConnection(f *flags) error {
 // usageErr names the subcommands a resource accepts.
 func usageErr(resource string) error {
 	subs := map[string]string{
-		"project": "create --display-name <n> | list | get <prj_id> | set-policy <prj_id> [--allowed-models <a,b>] [--approvers <p,q>] [--pool <pool_id>] (set-policy REPLACES the whole policy)",
 		"apikey":  "create --project <prj_id> [--scope <s>]... | list | get <key_id> | revoke <key_id>",
 		"secret":  "create --name <n> (value on stdin) | list | get <name> | rotate <name> (value on stdin)",
 		"pool":    "create --name <n> --posture <sandboxed-linux|unsandboxed-host> [--os <o>] [--arch <a>] [--strict] | list | set-strict <pool_id> [--strict] (posture is fixed at creation: machines inherit it)",

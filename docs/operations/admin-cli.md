@@ -1,4 +1,4 @@
-# Admin CLI — `palai project | apikey | secret`
+# Admin CLI — `palai apikey | secret`
 
 The admin CLI is a **thin authenticated HTTP client** over the E13 provisioning and secret-ref APIs
 (`POST/GET /v1/projects`, `/v1/api-keys`, `/v1/secret-refs`). It adds no server
@@ -37,11 +37,14 @@ page's later sections assume.
 ## Projects
 
 ```sh
-palai project create --display-name "checkout"
-palai project list
-palai project get <prj_id>
+curl -sS -X POST "$PALAI_BASE_URL/v1/projects" -H "Authorization: Bearer $PALAI_API_KEY" \
+  -H 'content-type: application/json' -d '{"display_name":"checkout"}'
+curl -sS "$PALAI_BASE_URL/v1/projects" -H "Authorization: Bearer $PALAI_API_KEY"
+curl -sS "$PALAI_BASE_URL/v1/projects/<prj_id>" -H "Authorization: Bearer $PALAI_API_KEY"
 # §14 config_policy write-path (only the flags you pass are sent):
-palai project set-policy <prj_id> --allowed-models m1,m2 --allowed-tools web_search --default-tools web_search
+curl -sS -X PATCH "$PALAI_BASE_URL/v1/projects/<prj_id>" -H "Authorization: Bearer $PALAI_API_KEY" \
+  -H 'content-type: application/json' \
+  -d '{"config_policy":{"allowed_models":["m1","m2"],"allowed_tools":["web_search"],"default_tools":["web_search"]}}'
 ```
 
 ## API keys

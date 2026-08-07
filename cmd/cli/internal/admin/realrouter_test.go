@@ -91,25 +91,16 @@ func realRouterServer(t *testing.T, v middleware.Verifier, sec capi.SecretRefAPI
 // proving the CLI hits routes the real mux actually serves, that the one-time key is disclosed on create,
 // and that the write-only secret value reaches the store but never the response.
 //
-// Organization creation is the one exception, run first against its OWN server and its OWN
-// middleware.ScopeSystem-scoped key: Task 2 gates opening a tenant on the platform capability, not on the
-// ordinary admin key every other step below is proven against — so the shared admin key stays exactly
-// what this comment says it is, empty scopes and no platform capability.
+// ‼️ TENANT CREATION LEFT THIS TEST WITH THE `project` VERB (2026-08-07). The block above used to run
+// first against its own middleware.ScopeSystem-scoped server, because opening a tenant is gated on the
+// platform capability rather than on the ordinary admin key the steps below use. What it PROVED was that
+// the CLI could open a tenant and render the one-time key without leaking the bearer — a claim about a
+// path that no longer exists.
+//
+// THE CAPABILITY GATE DID NOT LEAVE WITH IT, and that is why the block could go rather than move: it is
+// structural in the router, not asserted here. api/router.go: "POST /v1/projects … is gated on `system`".
+// This test never drove the refusal anyway — it presented a system-scoped key and succeeded.
 func TestAdminCLIAgainstRealRouter(t *testing.T) {
-	platformBase := realRouterServer(t, staticVerifier{scope: middleware.Scope{Scopes: []string{middleware.ScopeSystem}}}, &fakeSec{})
-	t.Setenv("PALAI_BASE_URL", platformBase)
-	t.Setenv("PALAI_API_KEY", "platform-key")
-	var openOut bytes.Buffer
-	if err := Run("project", []string{"create", "--display-name", "Acme"}, &openOut, strings.NewReader("")); err != nil {
-		t.Fatalf("Run([project create --display-name Acme]): %v", err)
-	}
-	if !strings.Contains(openOut.String(), `"sk_oneTimeProjectKey"`) {
-		t.Errorf("output %q missing %q", openOut.String(), `"sk_oneTimeProjectKey"`)
-	}
-	if strings.Contains(openOut.String(), "platform-key") {
-		t.Errorf("output %q leaked the bearer key", openOut.String())
-	}
-
 	sec := &fakeSec{}
 	base := realRouterServer(t, staticVerifier{scope: middleware.Scope{Project: "prj_1"}}, sec)
 	t.Setenv("PALAI_BASE_URL", base)
@@ -126,9 +117,6 @@ func TestAdminCLIAgainstRealRouter(t *testing.T) {
 		// middleware.ScopeSystem, which the ordinary admin key driving these steps deliberately lacks. It
 		// is proven above against its own platform-scoped key, where the one-time admin key it returns is
 		// what makes that proof worth having.
-		{args: []string{"project", "list"}, wantOut: `"list"`},
-		{args: []string{"project", "get", "prj_1"}, wantOut: `"prj_1"`},
-		{args: []string{"project", "set-policy", "prj_1", "--allowed-models", "m1,m2"}, wantOut: `"m1"`},
 		{args: []string{"apikey", "create", "--project", "prj_1"}, wantOut: `"sk_oneTimeApiKey"`, wantNotOut: "bootstrap-admin-key"},
 		{args: []string{"apikey", "list"}, wantOut: `"list"`},
 		{args: []string{"apikey", "get", "key_1"}, wantOut: `"key_1"`},
@@ -161,12 +149,17 @@ func TestAdminCLIAgainstRealRouter(t *testing.T) {
 
 // TestAdminCLIRealRouterInsufficientScope drives the real provision-capability gate: a run-only key is
 // refused with a 403 whose RFC9457 problem the CLI renders (code + request id).
+// ‼️ THE VEHICLE IS `apikey` AND NOT A FLEET VERB, in this test and the one below it. realRouterServer
+// wires provisioning (fakeProv) and the secret-refs option and nothing else, so a `pool`/`runner` verb
+// answers 404 here — a transport error, not the refusal these two are about. The vehicle changed on
+// 2026-08-07 when `project list` (the original) left with its verb; a 404 would have passed neither test,
+// which is the only reason the substitution was measurable at all.
 func TestAdminCLIRealRouterInsufficientScope(t *testing.T) {
 	base := realRouterServer(t, staticVerifier{scope: middleware.Scope{Project: "prj_1", Scopes: []string{"run"}}}, &fakeSec{})
 	t.Setenv("PALAI_BASE_URL", base)
 	t.Setenv("PALAI_API_KEY", "run-only-key")
 
-	err := Run("project", []string{"list"}, new(bytes.Buffer), strings.NewReader(""))
+	err := Run("apikey", []string{"list"}, new(bytes.Buffer), strings.NewReader(""))
 	if err == nil || !strings.Contains(err.Error(), "insufficient_scope") {
 		t.Fatalf("want an insufficient_scope render, got %v", err)
 	}
@@ -179,7 +172,7 @@ func TestAdminCLIRealRouterInvalidToken(t *testing.T) {
 	t.Setenv("PALAI_BASE_URL", base)
 	t.Setenv("PALAI_API_KEY", "bogus-key")
 
-	err := Run("project", []string{"list"}, new(bytes.Buffer), strings.NewReader(""))
+	err := Run("apikey", []string{"list"}, new(bytes.Buffer), strings.NewReader(""))
 	if err == nil || !strings.Contains(err.Error(), "invalid_token") {
 		t.Fatalf("want an invalid_token render, got %v", err)
 	}

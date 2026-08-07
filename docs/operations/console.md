@@ -277,9 +277,10 @@ the flags you pass, and its own help says the realistic accident is `--pool` wit
 it, pass every flag you want to keep:
 
 ```sh
-palai admin project set-policy prj_local \
-  --allowed-models 'claude-sonnet-5' --allowed-tools 'git.push' --default-tools 'git.push' \
-  --approvers 'key:key_9f2c1d' --pool pool_mac
+curl -sS -X PATCH "$PALAI_BASE_URL/v1/projects/prj_local" -H "Authorization: Bearer $PALAI_API_KEY" \
+  -H 'content-type: application/json' -d '{"config_policy":{
+    "allowed_models":["claude-sonnet-5"],"allowed_tools":["git.push"],"default_tools":["git.push"],
+    "approvers":["key:key_9f2c1d"],"pool":"pool_mac"}}'
 ```
 
 **An empty approver list is shown as permissive, in words**, right where you would leave it empty. Writing a
@@ -965,7 +966,8 @@ palai apikey create --project prj_local --scope approve
 
 # 2. Name that key's principal in the project's approver list. `key:<api_key_id>` is the principal form the
 #    server stamps for a bearer decision (coordinator.ApproverPrincipal).
-palai admin project set-policy prj_local --approvers 'key:key_9f2c1d'
+curl -sS -X PATCH "$PALAI_BASE_URL/v1/projects/prj_local" -H "Authorization: Bearer $PALAI_API_KEY" \
+  -H 'content-type: application/json' -d '{"config_policy":{"approvers":["key:key_9f2c1d"]}}'
 ```
 
 **`set-policy` REPLACES the whole `config_policy`** — read `docs/operations/approvals.md` §3 before running it,

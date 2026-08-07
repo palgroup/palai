@@ -63,7 +63,11 @@ func cliResources(t *testing.T) (direct, admin []string) {
 		for _, n := range names {
 			set = append(set, n[1])
 		}
-		if slices.Contains(set, "poolkey") && slices.Contains(set, "project") {
+		// TWO ANCHORS, AND THEY MOVED ON 2026-08-07 WHEN `project` LEFT THE CLI. The line is identified by
+		// members rather than by position, so a reordered switch still resolves; what it cannot survive is
+		// an anchor that is DELETED, which is what `project` became. `poolkey` and `model` are the two now,
+		// and neither appears on any other `case "` line in main.go — measured, not assumed.
+		if slices.Contains(set, "poolkey") && slices.Contains(set, "model") {
 			direct = set
 		}
 	}
