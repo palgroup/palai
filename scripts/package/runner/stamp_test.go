@@ -179,21 +179,38 @@ func TestTheDarwinArchiveCarriesTheAccountsDaemonAndLinuxDoesNot(t *testing.T) {
 	}
 }
 
-// TestTheInstallerPlacesTheAGENTAndNotTheDaemon is the other half of the same sentence: carrying the
-// daemon must not install it. T4 — "the default install never places or loads it, and enabling accounts
-// mode stays one explicit administrator action" — and an installer that quietly placed a root daemon
-// would turn a rootless install into a privileged one without anybody deciding.
-func TestTheInstallerPlacesTheAGENTAndNotTheDaemon(t *testing.T) {
+// TestTheInstallerPlacesThePayloadAndLoadsNoService is the other half of the same sentence, and the
+// line it draws MOVED on 2026-08-07.
+//
+// It used to be "install.sh must not name palai-agentd at all", on the design that enabling accounts
+// mode was a separate deliberate administrator action. That action is now `palai enroll` itself: one
+// command enrols, installs the service and installs the daemon, because a rented Mac is provisioned
+// unattended and a second privileged step nobody is there to type is a step that never happens.
+//
+// So the installer must PLACE the daemon binary — enrolment looks for it beside the agent and a clean
+// install could not finish without it — and it must still LOAD nothing. Placing a file asks for no
+// privilege; `launchctl bootstrap` and writing under /Library/LaunchDaemons are what turn a rootless
+// install into a privileged one, and those stay in enrolment where an administrator decided.
+func TestTheInstallerPlacesThePayloadAndLoadsNoService(t *testing.T) {
 	body, err := os.ReadFile(filepath.Join("..", "..", "install", "install.sh"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(body), `install_binary "$work/palai" "$dest"`) {
+	script := string(body)
+	if !strings.Contains(script, `install_binary "$work/palai" "$dest"`) {
 		t.Fatal("install.sh no longer installs the `palai` member by name — this guard is reading a script " +
-			"that has changed shape, and its silence about palai-agentd means nothing")
+			"that has changed shape, and everything it concludes below is about a file it does not understand")
 	}
-	if strings.Contains(string(body), "palai-agentd") {
-		t.Error("install.sh names palai-agentd: the default install must stay rootless, and placing a root " +
-			"LaunchDaemon is the one action the product asks an administrator to take deliberately")
+	// The payload has to land, or enrolment cannot finish on a machine nobody logs into.
+	if !strings.Contains(script, `install_binary "$work/palai-agentd"`) {
+		t.Error("install.sh does not place palai-agentd beside the agent: `palai enroll` looks for it there, " +
+			"so an unattended provision enrols a machine that cannot open a session account")
+	}
+	// And nothing here may load it. These are the verbs that would.
+	for _, privileged := range []string{"launchctl", "LaunchDaemons", "sudo "} {
+		if strings.Contains(script, privileged) {
+			t.Errorf("install.sh contains %q — the default install stays rootless, and loading the daemon is "+
+				"enrolment's one privileged step rather than something a `curl | sh` does silently", privileged)
+		}
 	}
 }

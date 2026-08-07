@@ -131,6 +131,24 @@ main() {
 	tar -xzf "$work/$name" -C "$work" || die "cannot extract $name"
 	[ -f "$work/palai" ] || die "$name does not contain a palai binary"
 
+	# THE ACCOUNT DAEMON TRAVELS WITH THE AGENT, and placing the FILE is not installing a service.
+	# `palai enroll` needs it beside this binary — it looks exactly there — and enrolment is the one
+	# privileged step, the one that writes the LaunchDaemon and loads it. This script still writes no
+	# service, loads nothing, and asks for no privilege: it drops a payload into the same directory it
+	# just wrote the agent to.
+	#
+	# It did NOT, until 2026-08-07, and that made a clean install unable to finish: enrolment found no
+	# daemon beside the binary and told the operator to extract one from the tarball by hand — a manual
+	# step on a machine that is provisioned unattended and that nobody logs into.
+	if [ -f "$work/palai-agentd" ]; then
+		install_binary "$work/palai-agentd" "$PALAI_INSTALL_PREFIX/palai-agentd"
+	fi
+
+	# ‼️ SET AFTER THE CALL ABOVE, AND THAT ORDER IS LOAD-BEARING. `install_binary` assigns `dest`
+	# itself and sh has no locals, so a call made while this variable held the agent's path rewrote it
+	# to the daemon's — and the agent then landed on the daemon's filename while the script reported
+	# success. The release channel caught it in one run: "install.sh reported success but installed
+	# nothing".
 	dest="$PALAI_INSTALL_PREFIX/palai"
 	# IDEMPOTENT: an identical binary already in place is reported and left alone, so a provisioner that
 	# runs this on every boot does not churn the file a running service has open.
