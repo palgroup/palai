@@ -16,6 +16,7 @@ import (
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 
 	"github.com/palgroup/palai/storage"
+	"os"
 )
 
 // SetWorkspaceProvisioner wires the root run's workspace auto-provisioning (spec §29.7-30.3, E09 Task
@@ -400,6 +401,15 @@ func (o *Orchestrator) provisionFreshAllocation(ctx context.Context, ops toolbro
 		slotDir, serr := SlotDirFor(o.provisionRoot, account)
 		if serr != nil {
 			return coordinator.Allocation{}, fmt.Errorf("provision %s: %w", allocID, serr)
+		}
+		// The slot directory is created HERE and with 0711, by the process that is about to write into
+		// it. The daemon's adopt leaves an existing directory's mode alone, so this is where the mode is
+		// decided — and traverse-for-others is what it must be: the RUNNER resolves an allocation path
+		// through this directory to open it, and a 0700 slot answers "permission denied" on the lstat
+		// before the session ever starts. Nobody but the account may LIST it, and everything inside is
+		// the account's own.
+		if err := os.MkdirAll(slotDir, 0o711); err != nil {
+			return coordinator.Allocation{}, fmt.Errorf("provision %s: create the slot directory: %w", allocID, err)
 		}
 		dir = filepath.Join(slotDir, allocID)
 	}
