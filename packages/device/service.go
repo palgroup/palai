@@ -182,13 +182,26 @@ func install(goos string, paths Paths, spec ServiceSpec, run runner) (InstalledS
 		// the same exit status from launchctl. Not evicting is worse: bootstrap onto an already-bootstrapped
 		// label fails with "service already loaded" and a re-run of `enroll` would refuse on a machine
 		// that is simply already installed.
-		domain := fmt.Sprintf("gui/%d", guiDomainUID(os.Getenv, os.Getuid))
-		_ = run("launchctl", "bootout", domain+"/"+ServiceLabel)
-		if err := run("launchctl", "bootstrap", domain, paths.ServiceFile); err != nil {
+		uid := guiDomainUID(os.Getenv, os.Getuid)
+		domain := fmt.Sprintf("gui/%d", uid)
+		// THE PLIST BELONGS TO THE HUMAN, not to the root that wrote it. launchd reads it as that user,
+		// and a root-owned file in their LaunchAgents directory is the kind of thing that works today and
+		// refuses after the next OS update tightens ownership checks.
+		if os.Geteuid() != uid {
+			_ = os.Chown(paths.ServiceFile, uid, -1)
+		}
+		// ‼️ `launchctl asuser` IS NOT DECORATION WHEN root TARGETS A USER'S GUI DOMAIN. Root is outside
+		// every GUI session, so `launchctl bootstrap gui/501 …` from root answers
+		// "Bootstrap failed: 5: Input/output error" — measured on a real Mac, 2026-08-07, right after the
+		// domain itself was corrected from gui/0. asuser joins that user's bootstrap namespace first,
+		// which is the context launchd requires to accept the load.
+		lc := launchctlFor(uid)
+		_ = run(lc[0], append(lc[1:], "bootout", domain+"/"+ServiceLabel)...)
+		if err := run(lc[0], append(lc[1:], "bootstrap", domain, paths.ServiceFile)...); err != nil {
 			return result, fmt.Errorf("load launch agent: %w", err)
 		}
 		result.Loaded = true
-		if err := run("launchctl", "kickstart", "-k", domain+"/"+ServiceLabel); err != nil {
+		if err := run(lc[0], append(lc[1:], "kickstart", "-k", domain+"/"+ServiceLabel)...); err != nil {
 			return result, fmt.Errorf("start launch agent: %w", err)
 		}
 		result.Started = true
@@ -234,4 +247,16 @@ func guiDomainUID(getenv func(string) string, getuid func() int) int {
 		return uid
 	}
 	return getuid()
+}
+
+// launchctlFor returns the argv prefix that reaches one uid's GUI bootstrap namespace.
+//
+// A process already inside that session calls launchctl directly. A root process is in no session at
+// all and must ask launchd to run the command AS that user — `launchctl asuser <uid> launchctl …` —
+// which is why enrolment, which must be root to install the account daemon, cannot use the plain form.
+func launchctlFor(uid int) []string {
+	if os.Geteuid() == uid {
+		return []string{"launchctl"}
+	}
+	return []string{"launchctl", "asuser", strconv.Itoa(uid), "launchctl"}
 }
