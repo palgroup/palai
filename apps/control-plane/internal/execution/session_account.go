@@ -173,7 +173,22 @@ func NewDaemonSessionAccounts(socketPath string) *SlotAccounts {
 			if err != nil {
 				return fmt.Errorf("session account %s slot %02d: %w", verb, slot, err)
 			}
-			if !resp.OK {
+			// ‼️ "IT ALREADY EXISTS" IS THE OUTCOME THIS CALL WANTED, NOT A REFUSAL, and treating it as one
+			// poisons a slot permanently. The daemon's create writes a user record and a home directory,
+			// which takes seconds; a caller that timed out mid-create leaves the account behind, and every
+			// later attempt on that slot then failed with `daemon refused (exists)` while the account it
+			// needed was sitting there. Measured on a real Mac on 2026-08-07, one fix after the timeout
+			// that produced it.
+			//
+			// The same is true in the other direction: deleting an account that is already gone is the
+			// state the caller asked for (ClassNotFound). Both verbs are idempotent in EFFECT, and this is the layer that
+			// says so — the daemon still reports precisely what it found, because a daemon that lied about
+			// which of the two happened would make an operator's `list` unreadable.
+			switch {
+			case resp.OK:
+			case verb == "create" && resp.Class == macagent.ClassExists:
+			case verb == "destroy" && resp.Class == macagent.ClassNotFound:
+			default:
 				return fmt.Errorf("session account %s slot %02d: daemon refused (%s): %s", verb, slot, resp.Class, resp.Message)
 			}
 			return nil
