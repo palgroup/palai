@@ -34,6 +34,30 @@ const MaxResponseBytes = 8192
 // window for it would turn a hang into a longer hang.
 const ExchangeTimeout = 5 * time.Second
 
+// AccountExchangeTimeout bounds the two verbs that do REAL WORK IN THE OPERATING SYSTEM rather than
+// answering from memory.
+//
+// `sysadminctl -addUser` creates a user record and a home directory, and on a busy Mac that is seconds,
+// not milliseconds — measured on 2026-08-07, where a session's first workspace failed with
+// `session account create slot 01: reading the daemon's reply to "create": i/o timeout` while the
+// daemon was healthy and went on to finish the account. The five-second bound above was chosen to catch
+// a WEDGED daemon, and it cannot tell one from a daemon doing exactly what it was asked.
+//
+// The two are separated rather than the shorter one being raised: `version` and `list` answer from
+// memory, and a slow answer from either IS the wedge the short bound exists to catch. Raising it for
+// everything would trade a real signal for a slow one.
+const AccountExchangeTimeout = 90 * time.Second
+
+// exchangeTimeoutFor returns the bound for one verb — the OS-touching pair get the long one.
+func exchangeTimeoutFor(v Verb) time.Duration {
+	switch v {
+	case VerbCreate, VerbDelete:
+		return AccountExchangeTimeout
+	default:
+		return ExchangeTimeout
+	}
+}
+
 // DialFunc opens one connection to a daemon. It is a function rather than a path so a test can make the
 // socket behave the way a cold boot does without waiting for one, and so nothing here has to guess how
 // a caller wants its connection made.
@@ -60,7 +84,7 @@ func Ask(ctx context.Context, dial DialFunc, req Request) (Response, error) {
 	if err != nil {
 		return Response{}, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, ExchangeTimeout)
+	ctx, cancel := context.WithTimeout(ctx, exchangeTimeoutFor(req.Verb))
 	defer cancel()
 
 	conn, err := dial(ctx)
