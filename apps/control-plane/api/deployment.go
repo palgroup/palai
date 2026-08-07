@@ -670,7 +670,6 @@ var deploymentCatalogue = []catalogueEntry{
 		ReaderFile: cpMain, ReaderFunc: "a2aPusherFromEnv",
 	},
 
-
 	{
 		Name: "PALAI_CAPABILITY_WORKER_LISTEN_ADDR", Group: "egress", Kind: kindValue, Default: "unset — the capability-worker gateway is NOT MOUNTED, and no shipped deployment config sets it",
 		Effect: "The address the out-of-process capability-worker gateway listens on: the enrol/claim/redeem/" +
