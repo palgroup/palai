@@ -11,7 +11,6 @@ import (
 	"os"
 	"runtime"
 
-	"github.com/palgroup/palai/cmd/cli/internal/admin"
 	"github.com/palgroup/palai/cmd/cli/internal/stack"
 	"github.com/palgroup/palai/packages/version"
 )
@@ -35,40 +34,12 @@ func dispatch(args []string) error {
 		return up(args[1:])
 	case "local":
 		return local(args[1:])
-	case "provider":
-		return provider(args[1:])
 	case "response":
 		return response(args[1:])
-	case "config":
-		return config(args[1:])
 	case "doctor":
 		return doctor(args[1:])
 	case "support-bundle":
 		return supportBundle(args[1:])
-	// poolkey joins the admin family for the reason apikey is in it: it is a thin client over one
-	// existing endpoint each, and a runner-pool enrolment key is tenancy administration.
-	//
-	// `pool` joins it for the SAME reason and closes the hole its sibling made visible (E28 T1): until this
-	// task there was a verb for a pool's enrolment KEY and none for the pool, so `--pool <pool_id>` could
-	// only ever name the one pool a tenant is born with. `palai pool create|list|set-strict`.
-	// `org` IS NOT IN THIS LIST, and it was until A.2 Task 6 — which removed the verb from admin.Run's
-	// switch and left it here. The two halves disagreed, so `palai org list` reached admin.Run, matched no
-	// case, and printed `palai: usage: palai org <>` — a usage line with an EMPTY verb list, which tells an
-	// operator nothing and looks like a broken build. Falling through to the full usage below is the
-	// answer an unknown command already gets.
-	case "apikey", "secret", "pool", "model":
-		return admin.Run(args[0], args[1:], os.Stdout, os.Stdin)
-	// `palai admin <resource> …` is the explicit spelling of the same family, and the machine lifecycle
-	// (E24 T5/T6) is reached ONLY this way — `palai admin runner approve|cordon|resume|revoke|list`. The prefix is not
-	// decoration: "runner" is a word this CLI already uses for the process a stack runs
-	// (`palai local doctor` reads it, compose names a `runner` service), so a bare `palai runner revoke`
-	// would read as an operation on the local container rather than on a fleet member.
-	case "admin":
-		if len(args) < 2 {
-			usage()
-			return errors.New("palai admin needs a resource, e.g. `palai admin runner list`")
-		}
-		return admin.Run(args[1], args[2:], os.Stdout, os.Stdin)
 	case "backup":
 		return backup(args[1:])
 	case "restore":
@@ -152,13 +123,6 @@ func local(args []string) error {
 	}
 }
 
-func provider(args []string) error {
-	if len(args) < 2 || args[0] != "add" {
-		return errors.New("usage: palai provider add <ref>   (secret value read from stdin)")
-	}
-	return stack.AddProvider(args[1])
-}
-
 // doctor dispatches `palai doctor --env-file production.env` — the health checks against a
 // PRODUCTION stack. `palai local doctor` probes host-published ports, which the production overlay
 // deliberately does not publish, so it reports almost everything red there for one reason that has
@@ -173,24 +137,6 @@ func doctor(args []string) error {
 		return err
 	}
 	return stack.ProductionDoctor(*envFile, *jsonOut)
-}
-
-// config dispatches `palai config validate` — a static, stack-less audit of a production deploy.
-func config(args []string) error {
-	if len(args) == 0 || args[0] != "validate" {
-		return errors.New("usage: palai config validate [--env-file <path>] [--overlay <path>] [--json]")
-	}
-	fs := flag.NewFlagSet("config validate", flag.ContinueOnError)
-	envFile := fs.String("env-file", "deploy/compose/production.env", "production env file to validate")
-	// Empty = the overlay this binary would actually bring up: the checkout's committed
-	// production.yml, or the copy a packaged binary materialises under ${PALAI_HOME}/compose. A
-	// literal repo-relative default only ever resolved from inside a clone.
-	overlay := fs.String("overlay", "", "production compose overlay to validate (default: the one this binary would bring up)")
-	jsonOut := fs.Bool("json", false, "emit the report as JSON")
-	if err := fs.Parse(args[1:]); err != nil {
-		return err
-	}
-	return stack.ConfigValidate(*envFile, *overlay, *jsonOut)
 }
 
 // supportBundle dispatches `palai support-bundle` — the redacted diagnostics tar.gz.
@@ -351,12 +297,9 @@ func usage() {
   palai local down                stop the stack, retaining data volumes
   palai local reset --confirm     stop and DELETE the data volumes
   palai local doctor [--json]     run the health checks (15: adds disk/queue/callback/runner_identity)
-  palai provider add <ref>        store a provider secret (value on stdin)
   palai response get <id>          retrieve + normalize one response (the SDK-parity fourth client)
 
 operability (E14 T3):
-  palai config validate [--env-file <p>] [--overlay <p>] [--json]
-                                  static production-posture audit (master key, edge-only surface)
   palai doctor [--env-file <p>] [--json]
                                   health checks against a PRODUCTION stack (18), reached the way
                                   that stack can be: docker-exec by container name + the TLS edge.
@@ -381,17 +324,5 @@ audit integrity (E18 T7 SEC-103; the chain is recomputed FROM THE ROWS, the anch
                                            sign a chain anchor over the events journal (openssl P-256)
   palai audit verify --checkpoint <p> --pubkey <out-of-band p> [--json]
                                            recompute + compare; a gap or tamper alert exits non-zero
-
-admin (thin client over the E13 APIs; base URL + key from flags, env, or .palai):
-  palai project create --display-name <n> | list | get <prj_id> | set-policy <prj_id> --allowed-models <a,b>
-  palai apikey create --project <prj_id> [--scope <s>]... | list | get <key_id> | revoke <key_id>
-  palai secret create --name <n> | list | get <name> | rotate <name>   (secret VALUE on stdin)
-  palai poolkey create --pool <pool_id> [--expires-at <rfc3339>] | list [--pool <pool_id>] | revoke <key_id>
-                                           runner-pool enrolment keys; create PRINTS the value once
-  palai admin runner list | approve <runner_id> | cordon <runner_id> | resume <runner_id> | revoke <runner_id>
-                                           ONE machine's lifecycle: cordon stops new leases and keeps
-                                           the session, revoke is IRREVERSIBLE and cuts it, approve
-                                           admits a machine a STRICT pool is holding (needs the
-                                           approve capability, not provision)
 `)
 }

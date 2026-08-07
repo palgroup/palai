@@ -8,13 +8,6 @@ import (
 	"strings"
 )
 
-// AddProvider stores a provider credential into the .palai file-secret compose mounts.
-// The value is read from stdin — never an argument — so it never lands in the process
-// table, shell history, or the CLI argv the credential-hygiene proof scans. The file is
-// 0600; the next `local up` carries it into the control-plane as a native Docker
-// file-secret (Option B), so the raw value never rides a compose environment value.
-func AddProvider(ref string) error { return addProvider(ref, os.Stdin) }
-
 // addProvider is the ONE secret write-path. `provider add` hands it os.Stdin; `palai up` hands it
 // the value it read from .env.local, so the bring-up gets the same 0600 file, the same mount
 // contract and the same hygiene without a second writer that could drift from this one.

@@ -89,8 +89,8 @@ func prodLayout(t *testing.T) (envFile, overlay, home string) {
 
 func TestConfigValidatePassesOnGoodConfig(t *testing.T) {
 	envFile, overlay, _ := prodLayout(t)
-	if err := ConfigValidate(envFile, overlay, true); err != nil {
-		t.Fatalf("valid production config should pass, got: %v", err)
+	if report := validateConfig(envFile, overlay); !report.OK {
+		t.Fatalf("valid production config should pass, checks: %+v", report.Checks)
 	}
 }
 
@@ -102,7 +102,7 @@ func TestConfigValidateRejectsDevMasterKey(t *testing.T) {
 		[]byte("REPLACE_WITH_OPENSSL_RAND_HEX_32"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := ConfigValidate(envFile, overlay, true); err == nil {
+	if report := validateConfig(envFile, overlay); report.OK {
 		t.Fatal("a dev-default master key must fail config validate")
 	}
 }
@@ -116,7 +116,7 @@ func TestConfigValidateRejectsReExposedPort(t *testing.T) {
 	if err := os.WriteFile(overlay, []byte(reexposed), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := ConfigValidate(envFile, overlay, true); err == nil {
+	if report := validateConfig(envFile, overlay); report.OK {
 		t.Fatal("a re-exposed internal host port must fail config validate")
 	}
 }
@@ -126,7 +126,7 @@ func TestConfigValidateRejectsMissingEnv(t *testing.T) {
 	if err := os.WriteFile(envFile, []byte("PALAI_HOME=/tmp/x\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := ConfigValidate(envFile, overlay, true); err == nil {
+	if report := validateConfig(envFile, overlay); report.OK {
 		t.Fatal("an env file missing required keys must fail config validate")
 	}
 }
@@ -183,7 +183,7 @@ func TestConfigValidateRejectsNonHexMasterKey(t *testing.T) {
 		[]byte("this-is-not-hex-and-not-64-chars"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := ConfigValidate(envFile, overlay, true); err == nil {
+	if report := validateConfig(envFile, overlay); report.OK {
 		t.Fatal("a non-hex master key must fail config validate")
 	}
 }
@@ -306,7 +306,7 @@ func TestEnvContractAcceptsTheEdgeCertOverride(t *testing.T) {
 	if err := os.WriteFile(envFile, []byte(withEdge), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := ConfigValidate(envFile, overlay, true); err != nil {
+	if report := validateConfig(envFile, overlay); !report.OK {
 		t.Fatalf("PALAI_EDGE_CERT/KEY must be a recognised production key: %v", err)
 	}
 }

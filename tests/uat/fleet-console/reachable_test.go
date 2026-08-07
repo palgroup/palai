@@ -228,7 +228,6 @@ func TestEveryE28ComponentTestIsNamedInTheRunAllowList(t *testing.T) {
 	packages := []string{
 		"./apps/control-plane/internal/execution",
 		"./apps/control-plane/internal/fleet",
-		"./cmd/cli/internal/admin",
 	}
 	checked, unfiltered := 0, 0
 	for _, pkg := range packages {

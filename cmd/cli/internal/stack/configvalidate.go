@@ -1,7 +1,6 @@
 package stack
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -54,44 +53,6 @@ var optionalEnv = map[string]bool{
 	// gateway keeps the single-SAN identity it pins (deploy/compose/production.yml, install.md §7).
 	"PALAI_EDGE_CERT": true,
 	"PALAI_EDGE_KEY":  true,
-}
-
-// ConfigValidate runs the static posture checks and reports them like doctor. With jsonOut it
-// prints the report as JSON; either way it returns a non-zero-exit error when any check is not
-// green, so `palai config validate` fails an unsafe production config in a script.
-//
-// An empty overlay means "the overlay this binary would bring up": the checkout's committed
-// deploy/compose/production.yml, or — for a packaged binary with no source tree — the embedded copy
-// materialised under ${PALAI_HOME}/compose. loadDevDefaults then finds production-entrypoint.sh
-// beside it either way, which is what keeps config-validate and the fail-closed boot guard reading
-// the same literals.
-func ConfigValidate(envFile, overlay string, jsonOut bool) error {
-	if overlay == "" {
-		dir, err := deployDir()
-		if err != nil {
-			return err
-		}
-		overlay = filepath.Join(dir, "production.yml")
-	}
-	report := validateConfig(envFile, overlay)
-	if jsonOut {
-		raw, err := json.Marshal(report)
-		if err != nil {
-			return err
-		}
-		fmt.Println(string(raw))
-	} else {
-		for name, c := range report.Checks {
-			fmt.Printf("%-18s %-8s %s\n", name, c.Status, c.Detail)
-		}
-	}
-	if !report.OK {
-		return fmt.Errorf("config validate: production posture is not safe to bring up")
-	}
-	if !jsonOut {
-		fmt.Println("config valid")
-	}
-	return nil
 }
 
 func validateConfig(envFile, overlay string) Report {
