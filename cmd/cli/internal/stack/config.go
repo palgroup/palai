@@ -16,13 +16,20 @@ import (
 
 	composefiles "github.com/palgroup/palai/deploy/compose"
 	"github.com/palgroup/palai/packages/version"
+
+	"github.com/palgroup/palai/packages/localca"
 )
 
-// controllerDNS is the exact DNS identity the runner gateway's server certificate
-// carries. The compose runner reaches the control-plane at this name and the runner
-// session pins it exactly (packages/runner requires a single matching SAN), so `init`
-// signs the server certificate for it and doctor probes the runner port under it.
-const controllerDNS = "control-plane"
+// controllerDNS is the exact DNS identity the runner gateway's server certificate carries. The compose
+// runner reaches the control-plane at this name and the runner session pins it exactly (packages/runner
+// requires a single matching SAN), so the certificate is signed for it and doctor probes the runner port
+// under it.
+//
+// THE MINTER OWNS THE NAME NOW. This is an alias of localca.ControllerDNS, which is where the certificate
+// that carries the name is actually signed — the control plane mints its own trust root at boot, so the
+// name could no longer live in a package only the CLI can import. Keeping one spelling matters more than
+// keeping it here: a second literal is how a fleet ends up trusting a certificate for a name nobody dials.
+const controllerDNS = localca.ControllerDNS
 
 // engineImage is the stable local tag `local up` builds the reference engine under and
 // passes to the runner as PALAI_ENGINE_IMAGE. It is locally-built (no release digest —

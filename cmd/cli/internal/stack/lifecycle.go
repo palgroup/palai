@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/palgroup/palai/packages/localca"
 )
 
 // Init generates the .palai layout: the bootstrap API key, the Postgres password, the
@@ -43,7 +45,12 @@ func Init() error {
 	if err := ensureSecretSlots(p); err != nil {
 		return err
 	}
-	if err := writeLocalCA(p); err != nil {
+	// The SAME minter the control plane runs at boot, so a stack initialised here and one that came up
+	// under plain `docker compose up` hold byte-identical trust roots. It leaves a complete root alone
+	// and refuses a partial one, which is why this call is safe on a re-init.
+	if _, err := localca.Ensure(localca.Paths{
+		CACert: p.caCert, CAKey: p.caKey, ServerCert: p.serverCert, ServerKey: p.serverKey,
+	}); err != nil {
 		return err
 	}
 

@@ -67,18 +67,22 @@ func TestNativeOverlayDoesNotStartTheContainerRunner(t *testing.T) {
 }
 
 // TestNativeOverlayReachesTheControlPlaneByTheNameOnItsCertificate is the one that would cost an
-// afternoon to rediscover. The stack CA mints exactly one SAN (cmd/cli/internal/stack/certs.go) and
-// the runner pins exactly one (packages/runner/session.go), so a runner in a container cannot dial a
-// native control plane by any other name. The overlay must therefore keep the name and change only
-// what it resolves to.
+// afternoon to rediscover. The trust root mints exactly one SAN (packages/localca) and the runner pins
+// exactly one (packages/runner/session.go), so a runner in a container cannot dial a native control
+// plane by any other name. The overlay must therefore keep the name and change only what it resolves to.
+//
+// IT READ cmd/cli/internal/stack UNTIL 2026-08-07, and the move is the point rather than a detail: the
+// certificate carrying this name is now minted by the CONTROL PLANE at boot, so a deployment that never
+// installs the CLI still serves it. This guard follows the minter, because the minter is what decides
+// which name the runner will be asked to trust.
 func TestNativeOverlayReachesTheControlPlaneByTheNameOnItsCertificate(t *testing.T) {
 	overlay := readOverlay(t)
-	certs, err := os.ReadFile("../../cmd/cli/internal/stack/config.go")
+	certs, err := os.ReadFile("../../packages/localca/localca.go")
 	if err != nil {
-		t.Fatalf("read the stack config: %v", err)
+		t.Fatalf("read the trust-root minter: %v", err)
 	}
-	if !strings.Contains(string(certs), `controllerDNS = "control-plane"`) {
-		t.Fatal("the stack's controllerDNS constant moved — the overlay's host-gateway alias is pinned to the old name")
+	if !strings.Contains(string(certs), `ControllerDNS = "control-plane"`) {
+		t.Fatal("localca.ControllerDNS moved — the overlay's host-gateway alias is pinned to the old name")
 	}
 	if !strings.Contains(overlay, `"control-plane:host-gateway"`) {
 		t.Fatalf("%s no longer aliases control-plane to the host gateway — the runner would resolve the name inside the compose network and find nothing", nativeOverlay)

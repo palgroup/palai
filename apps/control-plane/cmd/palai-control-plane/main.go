@@ -49,9 +49,11 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/internal/workers"
 	"github.com/palgroup/palai/packages/coordinator"
 	"github.com/palgroup/palai/packages/coordinator/recovery"
+	"github.com/palgroup/palai/packages/localca"
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 	"github.com/palgroup/palai/storage"
+	"path/filepath"
 )
 
 func main() {
@@ -1782,7 +1784,31 @@ func startRunnerGateway(addr string, registry fleet.Registry, poolKeys execution
 	}
 	caCertPath := mustGatewayEnv("PALAI_RUNNER_CA_CERT")
 	caKeyPath := mustGatewayEnv("PALAI_RUNNER_CA_KEY")
-	serverCert, err := tls.LoadX509KeyPair(mustGatewayEnv("PALAI_RUNNER_SERVER_CERT"), mustGatewayEnv("PALAI_RUNNER_SERVER_KEY"))
+	serverCertPath := mustGatewayEnv("PALAI_RUNNER_SERVER_CERT")
+	serverKeyPath := mustGatewayEnv("PALAI_RUNNER_SERVER_KEY")
+
+	// THE DEPLOYMENT OWNS ITS TRUST ROOT, so a plane brought up by `docker compose up -d` alone reaches
+	// this line with the four files present. It could not before: only `palai init` had ever minted them,
+	// which made an optional CLI load-bearing for every self-hosted install — a clean machine got a
+	// control plane that died two statements below in "load runner server certificate", and the only cure
+	// was a tool the deployment does not otherwise need.
+	//
+	// Ensure mints ONLY when all four are absent. A complete root is left exactly as it is, so an operator
+	// who supplied their own CA keeps it and a restart never re-mints one every enrolled runner would stop
+	// trusting; a PARTIAL root is refused by name rather than completed by guess.
+	minted, err := localca.Ensure(localca.Paths{
+		CACert: caCertPath, CAKey: caKeyPath, ServerCert: serverCertPath, ServerKey: serverKeyPath,
+	})
+	if err != nil {
+		log.Fatalf("runner trust root: %v", err)
+	}
+	if minted {
+		log.Printf("runner gateway: minted a local CA and a server certificate for %q at %s — "+
+			"this deployment had none, and every runner that enrolls from here trusts it",
+			localca.ControllerDNS, filepath.Dir(caCertPath))
+	}
+
+	serverCert, err := tls.LoadX509KeyPair(serverCertPath, serverKeyPath)
 	if err != nil {
 		log.Fatalf("load runner server certificate: %v", err)
 	}

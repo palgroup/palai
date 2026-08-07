@@ -255,7 +255,15 @@ services:
       - pg_password
       - master_key
     volumes:
-      - "${PALAI_HOME}/ca:/palai/ca:ro"
+      # WRITABLE, because the control plane MINTS this trust root when it finds none (packages/localca,
+      # called from startRunnerGateway). It was :ro while only `palai init` ever wrote it, and that made
+      # an optional CLI load-bearing for every install: a clean machine running `docker compose up -d`
+      # got a control plane that died in "load runner server certificate".
+      #
+      # It gives away nothing. This service already READS ca.key — it is the issuer that signs every
+      # enrolling runner — so write access adds no capability an attacker with read access lacks. The
+      # runner's mount below stays :ro and carries only ca.crt, which is the boundary that matters.
+      - "${PALAI_HOME}/ca:/palai/ca"
       - "${PALAI_HOME}/runner-token:/palai/runner-token:ro"
     ports:
       - "127.0.0.1:${PALAI_API_PORT}:8080"
