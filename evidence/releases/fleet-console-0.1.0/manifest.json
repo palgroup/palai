@@ -5088,7 +5088,7 @@
     {
       "checksum": "sha256:40df546d8856d875068b093f63979774c47fd7dd90fdd554131b5f99cdcd20ec",
       "db_assertions": [
-        "FLC-001: proven by 16 in-tree proof(s) at the component-real tier — a pool can be created with a posture and with strict enrolment switched on, a machine enrols into it over real mTLS and lands `pending`, a Dial answers ErrPoolHasNoRunner so the waiting room is structural rather than a comparison, the approve route is reached over HTTP against a machine an operator's own pool produced, and FLT-P14's counter finally has a reader — none of which any code path in this tree could do before",
+        "FLC-001: proven by 11 in-tree proof(s) at the component-real tier — a pool can be created with a posture and with strict enrolment switched on, a machine enrols into it over real mTLS and lands `pending`, a Dial answers ErrPoolHasNoRunner so the waiting room is structural rather than a comparison, the approve route is reached over HTTP against a machine an operator's own pool produced, and FLT-P14's counter finally has a reader — none of which any code path in this tree could do before",
         "OPENED BY E28 UNDER THE `FLC-` PREFIX, and that prefix is a GATE decision rather than a naming preference: `FLT-` (E24) and `CON-` (E25) are BOTH already inside extensionIDPrefixes with their own owner lists and their own promote gates, so an `FLT-006` would match carriesE24FleetCase in PromoteGateFor and dispatch to a WEAKER gate that knows nothing about this epic's birth-path counter, its key-value scan, its approver-list equality, its alertdialog sweep or its ceiling ids — and would pass a bundle that dropped all five. E20, E21, E22, E25 and E26 each paid for that reasoning once. AND THE OTHER HALF WAS OPEN IN THIS VERY EPIC: `FLC-` was in NO prefix list while FLC-001, FLC-002 and FLC-003 shipped in T1, T2 and T3, so all three escaped tests/uat/extensions — the ONLY sweep in the tree that walks tests/uat/cases — and every UAT package reported ok. Both directions are closed here: `FLC-` is in extensionIDPrefixes, and tests/uat/fleet-console refuses an id in uat.FleetConsoleCaseIDs with no directory or with a declared proof that is not in the tree. THE SECOND DIRECTION IS THE ONE A DIRECTORY WALK COULD NOT FIND: FLC-004's directory did not exist at all, because T2 and T3 built the two halves of the confirmation rule and neither opened a case for the rule itself",
         "NOT in uat.CapabilityClaims and therefore NOT an input to any tier recompute — which is the whole tier argument in one line: A MANAGEMENT SCREEN IS NOT EVIDENCE ABOUT THE PLANE IT MANAGES. E22 did not advance a tier for DELETING a boundary, E23 for ADDING one, E24 for adding a PLANE, E25 for adding a CONFIGURATION SURFACE, E26 for changing the SHAPE of a call, and E28 does not for putting a fleet on a screen. `console` closes PREVIEW in the epic that made it BIGGER — two pages, two components, three new routes — with §6 leg 1 (a real rented Mac) and leg 3 (a deployed console with a manual assistive-technology pass) both open, and leg 3 GREW here because a modal dialog and a one-time announcement are precisely where axe is blind",
         "HONEST CEILING, AND THE FIRST PART IS THE ONE A READER OF A FLEET SCREEN WILL ASSUME THE OPPOSITE OF. NO REAL MAC WAS RENTED, ENROLLED OR RAN A BUILD: every machine here is a fake runner built from the shipped enrolment package, driven over a real mTLS wire against a real PostgreSQL on ONE box. `FLT-P15` STANDS AND BOUNDS EVERYTHING ELSE — a `lease.offer` carries the ENGINE, every TOOL still executes in the control plane's own process, so this release makes a Mac pool CREATABLE and does not make a Mac run `xcodebuild`. The screens say so themselves, in words, with the gap id, and a test counts that. `FLT-P2` stands: a declared posture is COMPARED and never verified, so an `unsandboxed-host` pool does not stop a Linux container calling itself one. `FLT-P13` stands: an approval admits an ENROLMENT rather than a MACHINE, so a strict pool asks again after every reboot. And `FLC-P1`/`FLC-P2`/`FLC-P4` record what this console does not do: the policy form is last-writer-wins, RevealOnce makes no claim about browser MEMORY, and creating a pool proves nothing about a machine being in it. §6 legs 1-6 are operator work and are NEVER claimed here"
@@ -5214,18 +5214,10 @@
             "strict_enrollment": true,
             "created_via": "public-api",
             "test": "TestPoolBirthReachesTheWaitingRoomAndTheApproveRoute"
-          },
-          {
-            "pool": "cli-created pool",
-            "posture": "sandboxed-linux",
-            "strict_enrollment": false,
-            "created_via": "cli",
-            "test": "TestPoolCreateReachesTheRealRouter"
           }
         ],
-        "pools_created": 3,
+        "pools_created": 2,
         "postures_created": [
-          "sandboxed-linux",
           "unsandboxed-host"
         ],
         "waiting_room_ledger": [

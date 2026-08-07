@@ -65,8 +65,8 @@ func TestTheCredentialACommandIsSpawnedWithCarriesTheSessionUid(t *testing.T) {
 }
 
 // TestACommandWithNoSessionAccountIsSpawnedExactlyAsItWasBefore is the no-regression half, and it is the
-// state EVERY deployment is in today: PALAI_SESSION_ACCOUNT_HELPER is set nowhere, so nothing mints an
-// account, so RunAs is nil on every command in the tree.
+// state a machine is in before `sudo palai agentd install`: nothing mints an account, so RunAs is nil
+// on every command in the tree.
 func TestACommandWithNoSessionAccountIsSpawnedExactlyAsItWasBefore(t *testing.T) {
 	for _, euid := range []int{0, 501} {
 		attr, err := procAttrFor(nil, euid)
