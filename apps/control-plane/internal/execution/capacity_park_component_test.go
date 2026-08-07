@@ -68,6 +68,34 @@ type capacityFixture struct {
 // that must still run (an undeclared machine has no ceiling at all).
 func newCapacityFixture(t *testing.T, capacity int) *capacityFixture {
 	t.Helper()
+	return newFleetFixture(t, capacityFleet{capacity: capacity})
+}
+
+// capacityFleet says which of the two fleet arrangements the fixture seeds, because the two refusals this
+// file drives arise on DIFFERENT ones and neither can be reached from the other's.
+//
+// A PROJECT-OWNED machine is reachable by its own project alone, so "another customer holds it" is not a
+// state that arrangement can be in — a fixture that wrote one anyway would be asserting against a world
+// production cannot produce, which is this tree's most expensive test shape.
+//
+// A PLANE-OWNED one (`project_id IS NULL` on the pool AND the machine) is where "devices are free and
+// customers take turns" lives, and it is what every deployment measured so far actually has: the native
+// bring-up enrols its Mac into a pool nobody owns, and both customers this file seeds reach it because it
+// belongs to neither of them.
+type capacityFleet struct {
+	capacity   int
+	planeOwned bool
+}
+
+// newFreeFleetFixture seeds the arrangement above: one plane-owned machine in `pool_default`, which the
+// fixture's tenant reaches only because it belongs to nobody.
+func newFreeFleetFixture(t *testing.T, capacity int) *capacityFixture {
+	t.Helper()
+	return newFleetFixture(t, capacityFleet{capacity: capacity, planeOwned: true})
+}
+
+func newFleetFixture(t *testing.T, spec capacityFleet) *capacityFixture {
+	t.Helper()
 	url := os.Getenv("PALAI_COMPONENT_POSTGRES_URL")
 	if url == "" {
 		t.Skip("PALAI_COMPONENT_POSTGRES_URL is required; run TEST=postgres scripts/test/component")
@@ -103,11 +131,56 @@ func newCapacityFixture(t *testing.T, capacity int) *capacityFixture {
 	// The pool is NAMED 'default' because `fleet.ResolvePool`'s last-but-one step resolves the tenant's
 	// own pool by that name; a randomly-named one would send `place` to the bootstrap CONSTANT and the run
 	// would fail as not-servable long before it reached a machine.
-	execSQL(t, pool, `INSERT INTO runner_pools (id, project_id, name, posture)
-	                  VALUES ($1,$2,'default','unsandboxed-host')`, f.poolID, f.tenant.Project)
-	execSQL(t, pool, `INSERT INTO runners (id, project_id, pool_id, state, posture, capacity)
-	                  VALUES ($1,$2,$3,'active','unsandboxed-host',$4)`,
-		f.machine, f.tenant.Project, f.poolID, capacity)
+	if spec.planeOwned {
+		// THE POOL IS RANDOMLY NAMED AND REACHED THROUGH THE PROJECT'S POLICY, not through
+		// `fleet.DefaultPoolID`. Production's free-fleet Mac sits in that CONSTANT, and seeding the constant
+		// is what a faithful fixture reaches for first — but the component tier runs every case against ONE
+		// database, so a well-known id is a row every other test can see. Measured, not reasoned about: the
+		// first draft of this fixture did seed `pool_default` and reddened three tests in other packages,
+		// one of them by counting pools that had nothing to do with it.
+		//
+		// The policy pool is ResolvePool's THIRD step and sits ABOVE the tenant-default the constant is the
+		// fallback for, so the resolution reaches a plane-owned pool by a route production also has — a
+		// project pinned to a pool — and every arrangement below stays what this test is about: the pool and
+		// the machine belong to NOBODY, which is the only shape in which two customers can want one Mac.
+		execSQL(t, pool, `UPDATE projects SET config_policy = jsonb_build_object('pool', $2::text) WHERE id = $1`,
+			f.tenant.Project, f.poolID)
+		execSQL(t, pool, `INSERT INTO runner_pools (id, project_id, name, posture)
+		                  VALUES ($1,NULL,$2,'unsandboxed-host')`, f.poolID, "plane-"+f.poolID)
+		execSQL(t, pool, `INSERT INTO runners (id, project_id, pool_id, state, posture, capacity)
+		                  VALUES ($1,NULL,$2,'active','unsandboxed-host',$3)`, f.machine, f.poolID, spec.capacity)
+		// ‼️ AND IT TAKES ITS ROWS BACK OUT, which the project-owned arm does not have to and this one does.
+		// A pool nobody owns is visible to EVERYONE — the RLS qual on runner_pools and runners admits
+		// `project_id IS NULL` to every tenant, which is the whole mechanism a free fleet is made of — so a
+		// row left here is a row in every other test's view of its own fleet. Measured: it reddened
+		// TestPoolBirthValidatesThePostureOnTheRouteRatherThanAtTheDatabase, whose claim is that four refused
+		// creates leave the caller's pool list EMPTY, by putting a fifth pool in a list it had never touched.
+		//
+		// The order is the foreign keys' and not preference: the run points at the pool, the holds point at
+		// the machine, and the machine points at the pool.
+		t.Cleanup(func() {
+			ctx := storage.WithSystemScope(context.Background())
+			for _, stmt := range []struct {
+				sql  string
+				args []any
+			}{
+				{`UPDATE runs SET pool_id = NULL WHERE pool_id = $1`, []any{f.poolID}},
+				{`DELETE FROM runner_leases WHERE runner_id = $1`, []any{f.machine}},
+				{`DELETE FROM runners WHERE id = $1`, []any{f.machine}},
+				{`DELETE FROM runner_pools WHERE id = $1`, []any{f.poolID}},
+			} {
+				if _, err := pool.Exec(ctx, stmt.sql, stmt.args...); err != nil {
+					t.Errorf("take the plane-owned fixture back out (%q): %v — every test after this one now sees a pool and a machine that are not theirs", stmt.sql, err)
+				}
+			}
+		})
+	} else {
+		execSQL(t, pool, `INSERT INTO runner_pools (id, project_id, name, posture)
+		                  VALUES ($1,$2,'default','unsandboxed-host')`, f.poolID, f.tenant.Project)
+		execSQL(t, pool, `INSERT INTO runners (id, project_id, pool_id, state, posture, capacity)
+		                  VALUES ($1,$2,$3,'active','unsandboxed-host',$4)`,
+			f.machine, f.tenant.Project, f.poolID, spec.capacity)
+	}
 	execSQL(t, pool, `INSERT INTO sessions (id, project_id) VALUES ($1,$2)`, f.sessionID, f.tenant.Project)
 	execSQL(t, pool, `INSERT INTO responses (id, project_id, session_id, state, input)
 	                  VALUES ($1,$2,$3,'queued','"build it"'::jsonb)`, f.responseID, f.tenant.Project, f.sessionID)
@@ -414,6 +487,114 @@ func TestARunParkedForCapacityDoesNotSpendItsRetryBudgetWaiting(t *testing.T) {
 		}
 		seen = append(seen, next)
 	}
+}
+
+// holdByAnotherCustomer opens a hold on the fixture's machine for a DIFFERENT project, through the same
+// HoldMachine the attempt path calls, and returns that occupancy's id so a caller can settle it.
+func (f *capacityFixture) holdByAnotherCustomer(t *testing.T) string {
+	t.Helper()
+	other := coordinator.Tenant{Project: redeliveryID("prj")}
+	session := redeliveryID("ses")
+	execSQL(t, f.cs.Pool(), `INSERT INTO projects (id) VALUES ($1)`, other.Project)
+	execSQL(t, f.cs.Pool(), `INSERT INTO sessions (id, project_id) VALUES ($1,$2)`, session, other.Project)
+	occupancy, err := f.cs.HoldMachine(context.Background(), other, session, f.machine)
+	if err != nil {
+		t.Fatalf("the other customer's hold on the free-fleet machine: %v — nobody is holding it, so nothing below is about tenancy", err)
+	}
+	return occupancy
+}
+
+// TestAMachineHeldByAnotherCustomerParksTheRunInsteadOfSharingIt — THE CROSSING THIS GUARD EXISTS TO STOP
+// WAS HAPPENING WHILE THE GUARD WATCHED.
+//
+// tests/component/fleet/tenant_exclusivity_test.go proves the COORDINATOR refuses the second customer, and
+// it passed every day this defect shipped: it drives AcquireLease, and what a store returns is not what a
+// platform does. holdMachine let ErrMachineHeldByAnotherTenant fall into its generic `err != nil` arm,
+// logged "is being occupied unmetered", and returned nil — so ExecuteAttempt's park arm, which names this
+// error and has since A.4 T6, could never be reached with it. MEASURED on the live plane 2026-08-07: five
+// such log lines, and ses_a6dc5d6e went on to clone a repository and run a shell command on a Mac another
+// customer was holding, with no row anywhere saying it had been there.
+//
+// THE MACHINE DECLARES THREE, which is what makes this a statement about tenancy at all: with room to
+// spare, the ceiling cannot be what turns this run away, and only the exclusivity rule would.
+//
+// AND THE ENGINE IS THE DISCRIMINATOR, for capacity's reason: "no occupancy for this session" is equally
+// true of the broken build — that is what unmetered MEANS — so the assertion that separates them is
+// whether the run was executed on the machine at all.
+func TestAMachineHeldByAnotherCustomerParksTheRunInsteadOfSharingIt(t *testing.T) {
+	f := newFreeFleetFixture(t, 3)
+	occupancy := f.holdByAnotherCustomer(t)
+
+	// NON-VACUITY: one hold on a machine that takes three. The machine has ROOM, so a park below cannot be
+	// the ceiling answering under another name.
+	if open := f.openHolds(t); open != 1 {
+		t.Fatalf("%d open hold(s) on the three-capacity machine, want 1 — the other customer is not holding it, or the machine is full for a reason that is not tenancy", open)
+	}
+
+	ch, err := f.runAttempt(t, "")
+	if err != nil {
+		t.Fatalf("ExecuteAttempt onto a machine another customer holds returned %v, want nil — a park that returns an error is a FAILED attempt, and five of those dead-letter a run that only has to wait", err)
+	}
+	if got := f.runState(t); got != "waiting" {
+		t.Fatalf("run state = %q on a Mac another customer is holding, want waiting — two customers were on one machine, which docs/operations/mac-sessions.md §5 says the product does not permit and 000008 exists to enforce", got)
+	}
+	if len(ch.sent) != 0 {
+		t.Fatalf("the parked attempt sent %d frame(s) to the engine (%v), want 0 — the run executed on another customer's machine", len(ch.sent), ch.sent)
+	}
+	live, parked := f.parkedAttempts(t)
+	if live != 0 || parked != 1 {
+		t.Fatalf("the parked run has %d live attempt(s) and %d awaiting-capacity attempt(s), want 0 and 1 — a run parked without the marker is one no settling hold will ever wake", live, parked)
+	}
+	if open := f.openHolds(t); open != 1 {
+		t.Fatalf("%d open hold(s) after the refused attempt, want 1 — a second customer's row was opened on a machine that serves one at a time", open)
+	}
+
+	// ‼️ AND THE OTHER HALF, WITHOUT WHICH THE FIRST IS FREE. An implementation that parked on every
+	// free-fleet machine satisfies every line above while serving nobody — and a single-Mac plane is every
+	// deployment measured so far, so "parks always" and "correct" are one commit apart. Settling the other
+	// customer's hold makes the machine free, and the SAME run must then take it: this is also the proof
+	// that the park drains, because the settle is the wake's own trigger.
+	t.Run("the same machine runs the attempt once the other customer's hold settles", func(t *testing.T) {
+		if _, err := f.cs.SettleOccupancy(context.Background(),
+			coordinator.Tenant{Project: f.holderProject(t, occupancy)}, occupancy, coordinator.ReleaseReasonIdle); err != nil {
+			t.Fatalf("settle the other customer's hold: %v", err)
+		}
+		if open := f.openHolds(t); open != 0 {
+			t.Fatalf("%d open hold(s) after the settle, want 0 — the machine is still held, so what runs below would not be about tenancy either", open)
+		}
+		woken, werr := f.cs.WakeRunAwaitingCapacity(context.Background(), f.tenant, f.poolID)
+		if werr != nil {
+			t.Fatalf("WakeRunAwaitingCapacity after the hold settled: %v", werr)
+		}
+		if woken != f.runID {
+			t.Fatalf("the settle woke %q, want the parked run %q — a run parked on a tenancy refusal has no route back, which is worse than sharing the Mac because it never ends", woken, f.runID)
+		}
+		ch, err := f.runAttempt(t, "")
+		if err != nil {
+			t.Fatalf("ExecuteAttempt on the freed machine: %v", err)
+		}
+		if got := f.runState(t); got != "completed" {
+			t.Fatalf("run state = %q on a machine nobody else holds, want completed — the run is being refused a free Mac", got)
+		}
+		if len(ch.sent) == 0 {
+			t.Fatal("the attempt on the freed machine sent the engine nothing — the park is being applied to a machine with no other customer on it")
+		}
+		if open := f.openHolds(t); open != 1 {
+			t.Fatalf("%d open hold(s) after the run took the freed machine, want 1 — it ran without opening its own hold, which is the unmetered case again", open)
+		}
+	})
+}
+
+// holderProject reads the project an occupancy belongs to, because SettleOccupancy is tenant-scoped and the
+// holder here is a project the test generated rather than the fixture's own.
+func (f *capacityFixture) holderProject(t *testing.T, occupancyID string) string {
+	t.Helper()
+	var project string
+	if err := f.cs.Pool().QueryRow(storage.WithSystemScope(context.Background()),
+		`SELECT project_id FROM runner_leases WHERE id = $1`, occupancyID).Scan(&project); err != nil {
+		t.Fatalf("read the holder of occupancy %s: %v", occupancyID, err)
+	}
+	return project
 }
 
 func (f *capacityFixture) jobAttempts(t *testing.T, jobID string) int {

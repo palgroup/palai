@@ -88,10 +88,28 @@ import (
 //     IdleReleaser.settleStranded (the recovery sweep) and by lease_reclaim.go's dangling-lease sweep;
 //     what remains is a delay bounded by the sweep interval.
 //
-// AND TODAY THE REFUSAL STILL CANNOT FIRE ON ANY SHIPPED DEPLOYMENT, which is a live ceiling and not a
-// date. No machine declares a capacity — the runner sends the field only when an operator configures one —
-// so `runners.capacity` is 0 everywhere, the ceiling in leases.sql never binds, every hold succeeds, and
-// every attempt is metered exactly as it was. This branch exists for the first deployment that opts in.
+// THERE ARE TWO REFUSALS HERE AND THEY HAVE DIFFERENT REACH — count them rather than reading one sentence
+// about "the refusal", because until 2026-08-07 there WAS one sentence and it was true of only one of them:
+//
+//   - THE CAPACITY REFUSAL STILL CANNOT FIRE ON ANY SHIPPED DEPLOYMENT, and that is a live ceiling rather
+//     than a date. No machine declares a capacity — the runner sends the field only when an operator
+//     configures one — so `runners.capacity` is 0 everywhere and the ceiling in leases.sql never binds.
+//     This branch exists for the first deployment that opts in.
+//   - THE TENANCY REFUSAL NEEDS NO CONFIGURATION AT ALL AND FIRES TODAY (000008). `grep -c unmetered` over
+//     this stack's control-plane logs → 5, every one of them this refusal, on 2026-08-06 and 2026-08-07.
+//
+// AND THAT SECOND ONE REACHED A `return "", nil` AND RAN THE ATTEMPT ANYWAY. What it cost is the thing
+// 000008 exists to prevent, so it is written down rather than quietly repaired: a session whose Mac was
+// held by ANOTHER customer executed on that Mac — measured on ses_a6dc5d6e at 04:19:26, which went on to
+// clone a repository and run `palai.workspace.shell` there — and it opened no row, so the crossing was
+// invisible on the bill as well as to the guard. ExecuteAttempt's park arm named this error the whole
+// time; it could not fire because this function answered `nil` before the error could reach it. A guard
+// declared, routed, commented and UNREACHABLE — the same shape this tree keeps finding in its own code.
+//
+// THE GENERIC ARM BELOW STAYS FAIL-OPEN, and the distinction is what makes both defensible: a hold that
+// could not be WRITTEN is the meter's failure and must not take the customer's run down with it, while a
+// hold that was REFUSED is a placement answer — the same kind of answer as the ceiling above it, and the
+// caller already knows what to do with one.
 //
 // AND IT IS REACHED ONLY FOR A RUN THAT HAS A WORKSPACE, which is an honest limit on the ceiling itself
 // rather than on this branch. The occupancy is the ALLOCATION's hold, so ExecuteAttempt calls this inside
@@ -108,6 +126,10 @@ func (o *Orchestrator) holdMachine(ctx context.Context, tenant coordinator.Tenan
 	switch {
 	case errors.Is(err, coordinator.ErrMachineAtCapacity):
 		log.Printf("session %s: machine %s already holds the capacity it declared; this run parks until a slot frees: %v",
+			sessionID, machine, err)
+		return "", err
+	case errors.Is(err, coordinator.ErrMachineHeldByAnotherTenant):
+		log.Printf("session %s: machine %s is held by another customer; this run parks until that hold settles: %v",
 			sessionID, machine, err)
 		return "", err
 	case err != nil:
