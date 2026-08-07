@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -181,7 +182,7 @@ func install(goos string, paths Paths, spec ServiceSpec, run runner) (InstalledS
 		// the same exit status from launchctl. Not evicting is worse: bootstrap onto an already-bootstrapped
 		// label fails with "service already loaded" and a re-run of `enroll` would refuse on a machine
 		// that is simply already installed.
-		domain := fmt.Sprintf("gui/%d", os.Getuid())
+		domain := fmt.Sprintf("gui/%d", guiDomainUID(os.Getenv, os.Getuid))
 		_ = run("launchctl", "bootout", domain+"/"+ServiceLabel)
 		if err := run("launchctl", "bootstrap", domain, paths.ServiceFile); err != nil {
 			return result, fmt.Errorf("load launch agent: %w", err)
@@ -215,4 +216,22 @@ func install(goos string, paths Paths, spec ServiceSpec, run runner) (InstalledS
 	default:
 		return result, fmt.Errorf("no service manager is implemented for %s; the agent can still be run in the foreground with --config %s", goos, spec.ConfigFile)
 	}
+}
+
+// guiDomainUID is the uid whose GUI domain this machine's LaunchAgent belongs in.
+//
+// UNDER sudo IT IS NOT THE CALLER'S uid, and that difference is a whole enrolment. `palai enroll` runs
+// as root — it must, to install the account daemon — and root has no GUI session, so bootstrapping into
+// `gui/0` answers "Bootstrap failed: 125: Domain does not support specified action" and the machine
+// finishes enrolled with no agent running. The agent belongs to the human who ran sudo, and that is the
+// same session the toolchain needs: an agent outside a GUI domain cannot reach xcodebuild or simctl.
+//
+// SUDO_UID is the only thing that carries that identity into a root process. It is read defensively —
+// a non-numeric or zero value falls back to the real uid rather than guessing — because this decides
+// which domain a service is loaded into and a wrong answer is silent until somebody looks for the agent.
+func guiDomainUID(getenv func(string) string, getuid func() int) int {
+	if uid, err := strconv.Atoi(strings.TrimSpace(getenv("SUDO_UID"))); err == nil && uid > 0 {
+		return uid
+	}
+	return getuid()
 }
