@@ -336,6 +336,16 @@ func (a *SysadminctlAccounts) removeSlotGroup(ctx context.Context, slot int) err
 	return nil
 }
 
+// readAttr reads one attribute off one directory-services record and returns its value with the label
+// stripped. A missing record is an error, which is what dscl itself answers.
+func (a *SysadminctlAccounts) readAttr(ctx context.Context, path, attr string) (string, error) {
+	out, err := a.run(ctx, "dscl", ".", "-read", path, attr)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(out), attr+":")), nil
+}
+
 // alignPrimaryGroup makes an EXISTING account's primary group the one this daemon allocates for its
 // slot, and it is a repair rather than a check because the alternative is a refusal a session cannot act
 // on.
@@ -351,11 +361,11 @@ func (a *SysadminctlAccounts) alignPrimaryGroup(ctx context.Context, name string
 		return err
 	}
 	path := "/Users/" + name
-	out, err := a.run(ctx, "dscl", ".", "-read", path, "PrimaryGroupID")
+	got, err := a.readAttr(ctx, path, "PrimaryGroupID")
 	if err != nil {
-		return macagent.Errorf(macagent.ClassInternal, "reading the primary group of %s failed: %v: %s", name, err, strings.TrimSpace(out))
+		return macagent.Errorf(macagent.ClassInternal, "reading the primary group of %s failed: %v", name, err)
 	}
-	if strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(out), "PrimaryGroupID:")) == strconv.Itoa(gid) {
+	if got == strconv.Itoa(gid) {
 		return nil
 	}
 	if out, err := a.run(ctx, "dscl", ".", "-create", path, "PrimaryGroupID", strconv.Itoa(gid)); err != nil {
@@ -422,15 +432,43 @@ func (a *SysadminctlAccounts) Create(ctx context.Context, slot int) (string, str
 	// path. Passing one would put it in argv, where every user on the box reads it out of `ps` — and
 	// on this platform `ps -E` was measured on 2026-08-04 to show a live process's environment to the
 	// same uid as well, so neither argv nor the environment is a place for a secret.
-	if out, err := a.run(ctx, "sysadminctl",
-		"-addUser", name,
-		"-fullName", fmt.Sprintf("Palai session s%02d", slot),
-		"-UID", strconv.Itoa(uid),
-		"-GID", strconv.Itoa(gid),
-		"-shell", "/bin/zsh",
-		"-home", home,
-	); err != nil {
-		return "", "", macagent.Errorf(macagent.ClassInternal, "creating %s failed: %v: %s", name, err, strings.TrimSpace(out))
+	// ‼️ dscl AND NOT `sysadminctl -addUser`, AND THIS WAS MEASURED RATHER THAN PREFERRED. On this Mac on
+	// 2026-08-08, five of six accounts carried a uid this daemon never allocated: `-UID 702` through
+	// `-UID 706` produced 505, 506, 507, 508 and 509 — macOS's own next-free sequence — while 702..706
+	// were all FREE (`dscl . -search /Users UniqueID 702` answered nothing for every one of them).
+	// sysadminctl took the flag, ignored it, and exited 0.
+	//
+	// WHAT THAT COSTS IS NOT COSMETIC. The uid is the boundary: the control plane hands the DERIVED uid
+	// to whatever drops privilege, so a session would have dropped to a uid no account holds. And the
+	// deletion guard refuses any record whose uid is not the derived one — correctly — so every one of
+	// those five accounts became undeletable and its slot was poisoned for the machine's lifetime. The
+	// live plane said so in as many words: `destroy slot 05: uid 508 is not the uid 705 this daemon
+	// allocates`.
+	//
+	// dscl writes exactly the attributes it is given and cannot substitute another value. The one thing
+	// sysadminctl did for us that this does not is create the home directory, and it did not do that
+	// either — see createhomedir below, which was always the thing that made the home.
+	for _, attr := range [][]string{
+		{"UniqueID", strconv.Itoa(uid)},
+		{"PrimaryGroupID", strconv.Itoa(gid)},
+		{"UserShell", "/bin/zsh"},
+		{"NFSHomeDirectory", home},
+		{"RealName", fmt.Sprintf("Palai session s%02d", slot)},
+	} {
+		args := append([]string{".", "-create", "/Users/" + name}, attr...)
+		if out, err := a.run(ctx, "dscl", args...); err != nil {
+			return "", "", macagent.Errorf(macagent.ClassInternal, "creating %s failed at %s: %v: %s", name, attr[0], err, strings.TrimSpace(out))
+		}
+	}
+
+	// AND READ IT BACK, because the whole reason the line above is dscl is that a creator reported success
+	// and wrote something else. A verification that trusts the creator it just stopped trusting would be
+	// the same defect one layer up.
+
+	if got, rerr := a.readAttr(ctx, "/Users/"+name, "UniqueID"); rerr != nil || got != strconv.Itoa(uid) {
+		return "", "", macagent.Errorf(macagent.ClassInternal,
+			"created %s but directory services reports UniqueID %q rather than the %d this daemon allocates; the account "+
+				"is not the one that was asked for and must not be handed to a session (%v)", name, got, uid, rerr)
 	}
 
 	marker := strings.Join([]string{markerMagic, markerVersion, huuid, name, a.now().UTC().Format(time.RFC3339)}, ":")
@@ -488,16 +526,26 @@ func (a *SysadminctlAccounts) Delete(ctx context.Context, slot int) (string, str
 		return "", "", macagent.Errorf(macagent.ClassRefused, "%s", why)
 	}
 
-	// -secure erases the home directory rather than unlinking it. Spelled with ONE dash: `sysadminctl`
-	// on Darwin 25.3.0 prints `-deleteUser <user name> [-secure || -keepHome]`, and the plan's
-	// `--secure` is not a flag this binary has.
-	if out, err := a.run(ctx, "sysadminctl", "-deleteUser", name, "-secure"); err != nil {
-		return "", "", macagent.Errorf(macagent.ClassInternal, "deleting %s failed: %v: %s", name, err, strings.TrimSpace(out))
+	// ‼️ dscl AND NOT `sysadminctl -deleteUser -secure`, FOR THE REASON THE CREATOR IS dscl. On this Mac
+	// on 2026-08-08 the live plane logged `destroy slot 01: sysadminctl reported success but the record
+	// for palai-s01 still exists` — the verification below firing, on a deletion that exited 0 and did
+	// nothing. sysadminctl has now been measured lying in both directions on the same machine, and a
+	// privileged surface cannot be built on a tool that reports outcomes it did not produce.
+	//
+	// THE TWO STEPS ARE SEPARATE BECAUSE THEY FAIL SEPARATELY. `-secure` erased the home as part of the
+	// same call, so a home that could not be removed and a record that could not be deleted arrived as
+	// one opaque exit code. Deleting the record first is also the safer order: a record that is gone
+	// cannot be logged into while its home is being removed.
+	if out, err := a.run(ctx, "dscl", ".", "-delete", "/Users/"+name); err != nil {
+		return "", "", macagent.Errorf(macagent.ClassInternal, "deleting the record for %s failed: %v: %s", name, err, strings.TrimSpace(out))
+	}
+	if err := os.RemoveAll(home); err != nil {
+		return "", "", macagent.Errorf(macagent.ClassInternal, "the record for %s is gone but %s could not be removed: %v", name, home, err)
 	}
 	// Verified rather than trusted, the same way a reconciler checks both halves: the record can go
 	// while the home stays, and a home left behind is the residue this whole phase exists to remove.
 	if after, err := a.record(ctx, name); err == nil && after.exists {
-		return "", "", macagent.Errorf(macagent.ClassInternal, "sysadminctl reported success but the record for %s still exists", name)
+		return "", "", macagent.Errorf(macagent.ClassInternal, "the deletion reported success but the record for %s still exists", name)
 	}
 	if _, err := os.Lstat(home); err == nil {
 		return "", "", macagent.Errorf(macagent.ClassInternal, "the record for %s went but %s did not", name, home)

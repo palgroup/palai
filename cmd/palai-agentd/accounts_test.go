@@ -30,6 +30,15 @@ type recordingRun struct {
 	// the first run of this file failed with "sysadminctl reported success but the record still
 	// exists", which is exactly what the daemon should say when a deletion silently does nothing.
 	gone map[string]bool
+	// made is the other half of the same idea: a `dscl . -create /Users/X UniqueID N` MAKES the record,
+	// and a later read answers what was written. Scripting the read instead would let a test assert a
+	// uid the creator never wrote — which is precisely the production defect this fake exists to model,
+	// so the fake keeps the state rather than a lookup table.
+	made map[string]string
+	// substituteUID makes the creator LIE: whatever uid it is told to write, it writes this one. That is
+	// what `sysadminctl -addUser -UID` was measured doing on this Mac, and a fake that could not
+	// reproduce it could not be used to prove the read-back catches it.
+	substituteUID string
 }
 
 func (r *recordingRun) run(_ context.Context, name string, args ...string) (string, error) {
@@ -39,16 +48,34 @@ func (r *recordingRun) run(_ context.Context, name string, args ...string) (stri
 	if r.fail[key] {
 		return "boom", os.ErrPermission
 	}
-	if name == "sysadminctl" && len(args) >= 2 && args[0] == "-deleteUser" {
+	if name == "dscl" && len(args) >= 3 && args[1] == "-delete" && strings.HasPrefix(args[2], "/Users/") {
 		if r.gone == nil {
 			r.gone = map[string]bool{}
 		}
-		r.gone[args[1]] = true
+		account := strings.TrimPrefix(args[2], "/Users/")
+		r.gone[account] = true
+		delete(r.made, account)
 	}
-	// A read of a record that has been deleted fails, the way dscl does.
+	if name == "dscl" && len(args) >= 5 && args[1] == "-create" && strings.HasPrefix(args[2], "/Users/") && args[3] == "UniqueID" {
+		if r.made == nil {
+			r.made = map[string]string{}
+		}
+		written := args[4]
+		if r.substituteUID != "" {
+			written = r.substituteUID
+		}
+		r.made[strings.TrimPrefix(args[2], "/Users/")] = written
+		delete(r.gone, strings.TrimPrefix(args[2], "/Users/"))
+	}
+	// A read of a record that has been deleted fails, the way dscl does; a read of one that was created
+	// answers the uid the creator actually wrote.
 	if name == "dscl" && len(args) >= 3 && args[1] == "-read" {
-		if account := strings.TrimPrefix(args[2], "/Users/"); r.gone[account] {
+		account := strings.TrimPrefix(args[2], "/Users/")
+		if r.gone[account] {
 			return "", os.ErrNotExist
+		}
+		if uid, ok := r.made[account]; ok && len(args) >= 4 && args[3] == "UniqueID" {
+			return "UniqueID: " + uid, nil
 		}
 	}
 	if out, ok := r.answers[key]; ok {
@@ -102,7 +129,11 @@ func TestCreateRunsArgvAndNeverACommandLine(t *testing.T) {
 		"dscl . -create /Groups/palai-s07-grp":                                                                                         "",
 		"dscl . -create /Groups/palai-s07-grp PrimaryGroupID 807":                                                                      "",
 		"dscl . -create /Groups/palai-s07-grp RealName Palai session slot 07":                                                          "",
-		"sysadminctl -addUser palai-s07 -fullName Palai session s07 -UID 707 -GID 807 -shell /bin/zsh -home /Users/palai-s07":          "",
+		"dscl . -create /Users/palai-s07 UniqueID 707":                                                                                 "",
+		"dscl . -create /Users/palai-s07 PrimaryGroupID 807":                                                                           "",
+		"dscl . -create /Users/palai-s07 UserShell /bin/zsh":                                                                           "",
+		"dscl . -create /Users/palai-s07 NFSHomeDirectory /Users/palai-s07":                                                            "",
+		"dscl . -create /Users/palai-s07 RealName Palai session s07":                                                                   "",
 		"dscl . -create /Users/palai-s07 " + markerAttr + " " + markerMagic + ":1:" + testHostUUID + ":palai-s07:2026-08-05T12:00:00Z": "",
 		"createhomedir -c -u palai-s07":                                                                                                "",
 	}}
@@ -127,8 +158,17 @@ func TestCreateRunsArgvAndNeverACommandLine(t *testing.T) {
 		"dscl . -create /Groups/palai-s07-grp",
 		"dscl . -create /Groups/palai-s07-grp PrimaryGroupID 807",
 		"dscl . -create /Groups/palai-s07-grp RealName Palai session slot 07",
-		// Only then the account, and it names the group that now exists.
-		"sysadminctl -addUser palai-s07 -fullName Palai session s07 -UID 707 -GID 807 -shell /bin/zsh -home /Users/palai-s07",
+		// Only then the account, written attribute by attribute, and it names the group that now exists.
+		// dscl rather than `sysadminctl -addUser` because sysadminctl was measured taking `-UID` and
+		// writing macOS's own next-free number instead — see the creator for what that cost.
+		"dscl . -create /Users/palai-s07 UniqueID 707",
+		"dscl . -create /Users/palai-s07 PrimaryGroupID 807",
+		"dscl . -create /Users/palai-s07 UserShell /bin/zsh",
+		"dscl . -create /Users/palai-s07 NFSHomeDirectory /Users/palai-s07",
+		"dscl . -create /Users/palai-s07 RealName Palai session s07",
+		// AND THE READ-BACK, which is not bookkeeping: the reason the line above is dscl is that a
+		// creator reported success and wrote something else.
+		"dscl . -read /Users/palai-s07 UniqueID",
 		"dscl . -create /Users/palai-s07 " + markerAttr + " " + markerMagic + ":1:" + testHostUUID + ":palai-s07:2026-08-05T12:00:00Z",
 		"createhomedir -c -u palai-s07",
 	}
@@ -180,7 +220,7 @@ func deleteScript(marker string) *recordingRun {
 		"dscl . -read /Users/palai-s07 UniqueID":             "UniqueID: 707",
 		"dscl . -read /Users/palai-s07 " + markerAttr:        markerAttr + ": " + marker,
 		"dsmemberutil checkmembership -U palai-s07 -G admin": "user is not a member of the group",
-		"sysadminctl -deleteUser palai-s07 -secure":          "Deleting record for palai-s07",
+		"dscl . -delete /Users/palai-s07":                    "Deleting record for palai-s07",
 	}}
 }
 
@@ -188,10 +228,18 @@ func goodMarker() string {
 	return markerMagic + ":1:" + testHostUUID + ":palai-s07:2026-08-05T12:00:00Z"
 }
 
-// TestDeleteUsesTheSecureFlagThisMachineActuallyHas pins the spelling, which was measured rather than
-// copied: `sysadminctl` on Darwin 25.3.0 prints `-deleteUser <user name> [-secure || -keepHome]`. The
-// plan for this phase wrote `--secure`, and that is not a flag this binary has.
-func TestDeleteUsesTheSecureFlagThisMachineActuallyHas(t *testing.T) {
+// TestDeleteRemovesTheRecordAndTheHomeAsTwoSteps pins WHAT the deletion is, and it is two steps because
+// they fail separately.
+//
+// It was one `sysadminctl -deleteUser <name> -secure` until 2026-08-08, when the live plane logged
+// `destroy slot 01: sysadminctl reported success but the record for palai-s01 still exists` — the
+// daemon's own verification firing on a deletion that exited 0 and did nothing. The same tool was
+// measured lying in the other direction the same day, writing a uid nobody asked for (see
+// TestACreatorThatWritesAnotherUidIsREFUSED), so both halves of this surface are dscl now.
+//
+// `-secure` erased the home as part of the same call, which is why the separation matters: a home that
+// could not be removed and a record that could not be deleted arrived as one opaque exit code.
+func TestDeleteRemovesTheRecordAndTheHomeAsTwoSteps(t *testing.T) {
 	rec := deleteScript(goodMarker())
 	a := newTestAccounts(t, rec)
 	name, _, err := a.Delete(context.Background(), 7)
@@ -203,7 +251,7 @@ func TestDeleteUsesTheSecureFlagThisMachineActuallyHas(t *testing.T) {
 	}
 	found := false
 	for _, call := range rec.calls {
-		if strings.Join(call, " ") == "sysadminctl -deleteUser palai-s07 -secure" {
+		if strings.Join(call, " ") == "dscl . -delete /Users/palai-s07" {
 			found = true
 		}
 		for _, arg := range call {
@@ -213,7 +261,7 @@ func TestDeleteUsesTheSecureFlagThisMachineActuallyHas(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Errorf("Delete never ran `sysadminctl -deleteUser palai-s07 -secure`; it ran %v", rec.calls)
+		t.Errorf("Delete never ran `dscl . -delete /Users/palai-s07`; it ran %v", rec.calls)
 	}
 }
 
@@ -497,7 +545,7 @@ func TestDeleteSweepsTheDarwinBucketAfterTheAccountAndFailsLoudlyIfItCannot(t *t
 	// rather than leaving an account alive and claiming the bucket was the problem.
 	deleted := false
 	for _, call := range rec.calls {
-		if strings.Join(call, " ") == "sysadminctl -deleteUser palai-s07 -secure" {
+		if strings.Join(call, " ") == "dscl . -delete /Users/palai-s07" {
 			deleted = true
 		}
 	}
@@ -759,4 +807,55 @@ func TestAnExistingAccountIsMOVEDIntoItsSlotGroup(t *testing.T) {
 	t.Errorf("an existing account was handed back still in its old group — its session would own a "+
 		"workspace it cannot read, and every layer would report success.\nwant\n  %s\ngot\n%s",
 		want, strings.Join(got, "\n"))
+}
+
+// TestACreatorThatWritesAnotherUidIsREFUSED — THE DEFECT THIS GUARD WAS WRITTEN FROM, MEASURED ON A REAL
+// MAC ON 2026-08-08.
+//
+// Five of the six accounts on this machine carried a uid the daemon never allocated: `sysadminctl
+// -addUser -UID 702` through `-UID 706` produced 505, 506, 507, 508 and 509 — macOS's own next-free
+// sequence — while 702..706 were every one of them FREE. sysadminctl took the flag, ignored it, and
+// exited 0.
+//
+// WHAT IT COST: the control plane hands the DERIVED uid to whatever drops privilege, so a session would
+// have dropped to a uid no account holds; and the deletion guard refuses any record whose uid is not the
+// derived one — correctly — so all five became undeletable and their slots were poisoned for the
+// machine's lifetime. The live plane said it in as many words: `destroy slot 05: uid 508 is not the uid
+// 705 this daemon allocates`.
+//
+// The creator is dscl now, which cannot substitute a value. This test is about the OTHER half: whatever
+// the creator is, the record is read back, and a uid that disagrees is a refusal rather than a success.
+func TestACreatorThatWritesAnotherUidIsREFUSED(t *testing.T) {
+	rec := &recordingRun{answers: map[string]string{
+		"dscl . -create /Groups/palai-s07-grp":                                "",
+		"dscl . -create /Groups/palai-s07-grp PrimaryGroupID 807":             "",
+		"dscl . -create /Groups/palai-s07-grp RealName Palai session slot 07": "",
+		"dseditgroup -o edit -a operator -t user palai-s07-grp":               "",
+		"dscl . -create /Users/palai-s07 PrimaryGroupID 807":                  "",
+		"dscl . -create /Users/palai-s07 UserShell /bin/zsh":                  "",
+		"dscl . -create /Users/palai-s07 NFSHomeDirectory /Users/palai-s07":   "",
+		"dscl . -create /Users/palai-s07 RealName Palai session s07":          "",
+	}}
+	a := newTestAccounts(t, rec)
+	a.allocationRoot = t.TempDir()
+	a.ownerOf = func(string) (int, error) { return 501, nil }
+	a.lookupUser = func(int) (string, error) { return "operator", nil }
+	// THE CREATOR LIES THE WAY sysadminctl DID: it is asked for 707 and it writes 509.
+	rec.made = map[string]string{}
+	rec.answers["dscl . -create /Users/palai-s07 UniqueID 707"] = ""
+	rec.substituteUID = "509"
+
+	_, _, err := a.Create(context.Background(), 7)
+	if err == nil {
+		t.Fatal("an account carrying a uid this daemon never allocated was reported as created; it would be " +
+			"handed to a session that drops to a uid no account holds, and it could never be deleted")
+	}
+	if !strings.Contains(err.Error(), "509") || !strings.Contains(err.Error(), "707") {
+		t.Errorf("the refusal was %q, want one naming BOTH the uid that was written and the uid that was asked for", err)
+	}
+	for _, call := range rec.calls {
+		if call[0] == "createhomedir" {
+			t.Error("the home directory was populated for an account with the wrong uid: the refusal must come first")
+		}
+	}
 }
