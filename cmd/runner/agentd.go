@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"bytes"
 	macosdeploy "github.com/palgroup/palai/deploy/macos"
 	"github.com/palgroup/palai/packages/macagent"
 )
@@ -45,7 +46,7 @@ func agentdSource() (string, error) {
 // never what it attempted. It is the ONE install path: `palai agentd install` calls it, and so does
 // `palai enroll`, because a device that enrols and cannot open a session account is a device that runs
 // every customer's work as one uid.
-func installAgentd(ctx context.Context) (macagent.Health, error) {
+func installAgentd(ctx context.Context, allocationRoot string) (macagent.Health, error) {
 	source, err := agentdSource()
 	if err != nil {
 		return macagent.Health{}, err
@@ -54,6 +55,14 @@ func installAgentd(ctx context.Context) (macagent.Health, error) {
 	if err != nil {
 		return macagent.Health{}, fmt.Errorf("read the launch daemon description: %w", err)
 	}
+	// THE DAEMON LEARNS THE ALLOCATION ROOT FROM ITS SERVICE DEFINITION, which is where a launchd
+	// service's configuration belongs and the only channel that survives: a root LaunchDaemon inherits
+	// no shell, so an environment variable would arrive empty every time.
+	//
+	// It is the SAME value the agent was enrolled with, threaded here rather than re-derived, because
+	// the two must name one directory: the control plane places allocations under <root>/slot-NN and
+	// VerbAdopt gives <root>/slot-NN away. Two answers would be a chown of a directory nobody wrote to.
+	plist = bytes.ReplaceAll(plist, []byte("__PALAI_ALLOCATION_ROOT__"), []byte(allocationRoot))
 	return macagent.Install{
 		Elevation: macagent.DetectElevation(ctx, os.Geteuid, macagent.ExecRunner),
 		Run:       macagent.ExecRunner,
@@ -67,7 +76,7 @@ func installAgentd(ctx context.Context) (macagent.Health, error) {
 // runAgentdInstall is the explicit verb. It exists for a machine that was enrolled before enrolment
 // installed the daemon, and for an operator re-running the install after replacing the binary.
 func runAgentdInstall(ctx context.Context, out io.Writer) error {
-	health, err := installAgentd(ctx)
+	health, err := installAgentd(ctx, installedAllocationRoot())
 	if errors.Is(err, macagent.ErrCannotElevate) {
 		exe, _ := os.Executable()
 		return fmt.Errorf("%w\n\n  run it once as root on this machine:\n      sudo %s agentd install", err, exe)
@@ -116,4 +125,15 @@ func runAgentd(ctx context.Context, args []string, out io.Writer) error {
 	default:
 		return fmt.Errorf("unknown agentd subcommand %q — usage: palai agentd <install|status>", args[0])
 	}
+}
+
+// installedAllocationRoot is the workspace root this machine was enrolled with, for the explicit
+// `agentd install` verb. Enrolment passes its own value directly; this is the path for a machine that
+// is re-installing the daemon after the fact, where the answer already lives in the config on disk.
+func installedAllocationRoot() string {
+	installed := installedDevice()
+	if installed == nil {
+		return ""
+	}
+	return workspaceRoot(installed)
 }

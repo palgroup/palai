@@ -55,6 +55,10 @@ const (
 func main() {
 	socketPath := flag.String("socket", defaultSocketPath, "unix socket to serve on")
 	groupName := flag.String("group", defaultGroup, "group that owns the socket; membership in it is the credential")
+	// The directory this machine opens session workspaces under — the same value the agent was enrolled
+	// with. It is a FLAG and not a wire field on purpose: VerbAdopt joins a slot onto it, so a path never
+	// crosses the socket and a caller cannot point this daemon anywhere.
+	allocationRoot := flag.String("allocation-root", "", "directory this machine opens session workspaces under; VerbAdopt gives <root>/slot-NN to that slot's account")
 	showVersion := flag.Bool("version", false, "print the daemon version and exit")
 	flag.Parse()
 
@@ -64,13 +68,13 @@ func main() {
 	}
 
 	logger := log.New(os.Stderr, "palai-agentd: ", log.LstdFlags|log.LUTC)
-	if err := run(context.Background(), *socketPath, *groupName, logger); err != nil {
+	if err := run(context.Background(), *socketPath, *groupName, *allocationRoot, logger); err != nil {
 		logger.Printf("%v", err)
 		os.Exit(1)
 	}
 }
 
-func run(ctx context.Context, socketPath, groupName string, logger *log.Logger) error {
+func run(ctx context.Context, socketPath, groupName, allocationRoot string, logger *log.Logger) error {
 	if runtime.GOOS != "darwin" {
 		return fmt.Errorf("palai-agentd manages macOS session accounts and this is %s", runtime.GOOS)
 	}
@@ -91,10 +95,11 @@ func run(ctx context.Context, socketPath, groupName string, logger *log.Logger) 
 	}
 
 	srv := &Server{
-		Accounts:   NewSysadminctlAccounts(),
-		SocketPath: socketPath,
-		WantGID:    gid,
-		Logger:     logger,
+		Accounts:       NewSysadminctlAccounts(),
+		SocketPath:     socketPath,
+		AllocationRoot: allocationRoot,
+		WantGID:        gid,
+		Logger:         logger,
 		// The stamp of the daemon that is ACTUALLY SERVING, which is the only version an upgrade
 		// decision may be made on: a copy that landed at InstalledBinaryPath and a launchd job that was
 		// never restarted disagree, and the file is the one that lies.

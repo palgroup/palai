@@ -51,6 +51,8 @@
 		<string>/var/run/palai-agentd.sock</string>
 		<string>-group</string>
 		<string>palai</string>
+		<string>-allocation-root</string>
+		<string>__PALAI_ALLOCATION_ROOT__</string>
 	</array>
 
 	<!-- Root, because creating and deleting accounts is what this is for. It drops nothing and holds

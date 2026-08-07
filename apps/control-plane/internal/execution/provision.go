@@ -384,6 +384,25 @@ func (o *Orchestrator) provisionFreshAllocation(ctx context.Context, ops toolbro
 		}
 		account = acquired
 	}
+	// ‼️ THE ALLOCATION MOVES UNDER THE SLOT, HERE, BEFORE ANYTHING IS WRITTEN INTO IT.
+	//
+	// Only uid 0 may give a tree to another uid, so this process cannot hand the clone to the session's
+	// account — it is not root and never will be. The daemon is the root this machine has, and its
+	// protocol carries an integer and never a path: a caller that could name a directory could hand /etc
+	// to a tenant. So both sides DERIVE the directory from the slot — the control plane places the
+	// allocation at <root>/slot-NN/<alloc_id> and VerbAdopt gives <root>/slot-NN away — and the integer
+	// is the only thing that crosses between them.
+	//
+	// It happens before the clone rather than after, for the reason the account is acquired before it:
+	// a tree relocated afterwards is a tree copied twice, and a tree written to the old path is a tree
+	// the daemon will never be asked about.
+	if account.Bound() && o.provisionRoot != "" {
+		slotDir, serr := SlotDirFor(o.provisionRoot, account)
+		if serr != nil {
+			return coordinator.Allocation{}, fmt.Errorf("provision %s: %w", allocID, serr)
+		}
+		dir = filepath.Join(slotDir, allocID)
+	}
 	// Drive requested→provisioning→preparing idempotently: a retry after a failed clone re-enters from
 	// `provisioning` or `preparing`, so an already-applied transition (ErrInvalidState) is skipped —
 	// mirroring the run-transition loop in ExecuteAttempt. This is what lets a stuck-mid-provision
@@ -411,7 +430,10 @@ func (o *Orchestrator) provisionFreshAllocation(ctx context.Context, ops toolbro
 	// plane while the run has been told it owns them, which is a permission error arriving later, in the
 	// middle of a build, attributed to the build.
 	if account.Bound() {
-		if err := HandTreeTo(dir, account); err != nil {
+		// THE DAEMON DOES THE GIVING, because this process cannot. It adopts <root>/slot-NN, which is
+		// the parent of the directory just written — one call for every allocation this slot holds,
+		// rather than a walk per allocation, and idempotent by construction.
+		if err := o.sessionAccounts.Adopt(ctx, plan.sessionID); err != nil {
 			return coordinator.Allocation{}, fmt.Errorf("provision %s: %w", allocID, err)
 		}
 	}

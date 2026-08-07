@@ -46,6 +46,10 @@ type SessionAccounts interface {
 	// write. The `false` is therefore the answer, and execEnv turns it into a refusal rather than into
 	// a command that quietly runs as the control plane's own uid.
 	Lookup(sessionID string) (SessionAccount, bool)
+	// Adopt gives this session's allocation directory to this session's account. It is on the interface
+	// rather than only on the concrete type because provisioning depends on it and a deployment with no
+	// accounts must still compile — the same shape Acquire and Release already have.
+	Adopt(ctx context.Context, sessionID string) error
 	Release(ctx context.Context, sessionID string) error
 }
 
@@ -166,6 +170,8 @@ func NewDaemonSessionAccounts(socketPath string) *SlotAccounts {
 				v = macagent.VerbCreate
 			case "destroy":
 				v = macagent.VerbDelete
+			case "adopt":
+				v = macagent.VerbAdopt
 			default:
 				return fmt.Errorf("session account: %q is not a verb this daemon is asked for", verb)
 			}
@@ -287,4 +293,35 @@ func (a *SlotAccounts) Release(ctx context.Context, sessionID string) error {
 	delete(a.slots, sessionID)
 	a.mu.Unlock()
 	return nil
+}
+
+// Adopt asks the daemon to give this session's allocation directory to this session's account.
+//
+// IT REPLACED A WALK THIS PROCESS COULD NOT PERFORM. HandTreeTo below lchowns the tree itself, and only
+// uid 0 may give a tree to another uid — so on every deployment where the control plane is not root
+// (which is every deployment) it failed at the first entry with "operation not permitted". The daemon
+// is the root this installation has, and it derives the directory from the slot rather than being told
+// one, so a caller cannot point it anywhere.
+func (a *SlotAccounts) Adopt(ctx context.Context, sessionID string) error {
+	account, ok := a.Lookup(sessionID)
+	if !ok || !account.Bound() {
+		return fmt.Errorf("adopt: session %s holds no account", sessionID)
+	}
+	slot, ok := macagent.SlotFromUID(account.UID)
+	if !ok {
+		return fmt.Errorf("adopt: uid %d is not a session slot", account.UID)
+	}
+	return a.run(ctx, "adopt", slot)
+}
+
+// SlotDirFor is where one session's allocations live under the machine's workspace root.
+//
+// BOTH SIDES DERIVE IT FROM THE SLOT and neither tells the other a path: the control plane places an
+// allocation here, the daemon adopts here, and the integer is the only thing that crosses between them.
+func SlotDirFor(root string, account SessionAccount) (string, error) {
+	slot, ok := macagent.SlotFromUID(account.UID)
+	if !ok {
+		return "", fmt.Errorf("slot directory: uid %d is not a session slot", account.UID)
+	}
+	return filepath.Join(root, fmt.Sprintf("slot-%02d", slot)), nil
 }

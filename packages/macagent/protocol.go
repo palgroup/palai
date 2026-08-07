@@ -109,6 +109,17 @@ const (
 	VerbList
 	VerbVersion
 	VerbSpawn
+	// ‼️ VerbAdopt GIVES ONE SLOT'S ALLOCATION DIRECTORY TO THAT SLOT'S ACCOUNT, AND IT TAKES THE SAME
+	// SINGLE INTEGER EVERY OTHER VERB DOES. That is the whole reason a root daemon may have it: the
+	// caller chooses a slot and the DAEMON derives the path, from the allocation root it was installed
+	// with. A path on the wire would let any member of the socket's group hand /etc to a session
+	// account, which is the same argument [VerbSpawn] rests on one verb over.
+	//
+	// It exists because only uid 0 may give a tree to another uid. The control plane runs as the
+	// operator and clones the repository as itself; the account that must own the result is not the one
+	// that wrote it, and `lchown` from a non-root process answers "operation not permitted" — measured
+	// on a real Mac on 2026-08-07, where it was the last thing between a session and its own uid.
+	VerbAdopt
 )
 
 // Word is the token this verb is spelled with on the wire. An unknown verb has no word, and that is
@@ -125,6 +136,8 @@ func (v Verb) Word() string {
 		return "version"
 	case VerbSpawn:
 		return "spawn"
+	case VerbAdopt:
+		return "adopt"
 	default:
 		return ""
 	}
@@ -134,7 +147,9 @@ func (v Verb) Word() string {
 // than a comparison repeated at each site because a verb added without a slot — VerbVersion was — must
 // join the zero-argument branch of the parser, the encoder AND the dispatcher, and three separate
 // comparisons is three places to only update two of.
-func (v Verb) TakesSlot() bool { return v == VerbCreate || v == VerbDelete || v == VerbSpawn }
+func (v Verb) TakesSlot() bool {
+	return v == VerbAdopt || v == VerbCreate || v == VerbDelete || v == VerbSpawn
+}
 
 func (v Verb) String() string {
 	if w := v.Word(); w != "" {
@@ -298,6 +313,8 @@ func ParseRequest(line string) (Request, error) {
 		verb = VerbVersion
 	case "spawn":
 		verb = VerbSpawn
+	case "adopt":
+		verb = VerbAdopt
 	default:
 		return Request{}, Errorf(ClassUnknownVerb, "%q is not one of create, delete, list, version, spawn", fields[0])
 	}

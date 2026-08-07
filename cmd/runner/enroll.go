@@ -244,7 +244,11 @@ func enrol(ctx context.Context, args []string, out io.Writer, seams enrolSeams) 
 	// that survives an unattended install.
 	installAccounts := seams.InstallAccounts
 	if installAccounts == nil {
-		installAccounts = installAgentd
+		// Enrolment passes ITS OWN workspace root rather than re-reading one: the config it just wrote is
+		// the answer, and re-deriving it here would be a second reader of one fact.
+		installAccounts = func(ctx context.Context) (macagent.Health, error) {
+			return installAgentd(ctx, config.WorkspaceRoot)
+		}
 	}
 	if runtime.GOOS == "darwin" {
 		health, agentErr := installAccounts(ctx)

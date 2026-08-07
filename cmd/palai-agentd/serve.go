@@ -30,6 +30,13 @@ const connDeadline = 10 * time.Second
 type Server struct {
 	Accounts   Accounts
 	SocketPath string
+	// AllocationRoot is the directory this machine opens session workspaces under — the SAME value the
+	// agent was enrolled with. VerbAdopt joins a slot onto it, which is how a path never crosses the
+	// wire: the caller chooses an integer and this daemon chooses the directory.
+	//
+	// Empty means this daemon can adopt nothing and says so, rather than guessing a root and handing a
+	// tenant a directory nobody meant.
+	AllocationRoot string
 	// WantGID is the gid the socket must belong to. It is a gid rather than a group name because that
 	// is what a stat returns and what launchd's SockPathGroup takes; resolving the name happens once,
 	// at startup, where a missing group is a refusal to start rather than a per-request surprise.
@@ -149,6 +156,8 @@ func (s *Server) answer(ctx context.Context, line string) macagent.Response {
 			return responseFor(err)
 		}
 		return macagent.OKList(slots)
+	case macagent.VerbAdopt:
+		return s.adopt(ctx, req.Slot)
 	case macagent.VerbSpawn:
 		name, pid, err := s.Accounts.Spawn(ctx, req.Slot)
 		if err != nil {
