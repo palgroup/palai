@@ -86,16 +86,17 @@ var allTables = []string{
 	// The E17 T9 CapabilityWorker contract tables (000040): the enrolled-worker registry and the
 	// APPEND-ONLY job journal (self-re-asserting REVOKE).
 	"capability_workers", "capability_jobs",
-	// The E19 Slack tables: the workspace binding registry and the thread<->session correlation (000035),
-	// and the return leg's order-to-post outbox (000041). The first two were never registered here; a table
-	// this ledger does not name is a table its drop can go unnoticed.
-	"slack_connections", "slack_thread_sessions", "slack_reply_deliveries",
-	// The E20 turn handle (000042): which turn a Slack message became, so an edit can supersede it and a
-	// deletion can retract it.
-	"slack_message_turns",
-	// The E23 T1 approval delivery (000044 R4): the order to POST one approval question, keyed
-	// UNIQUE (approval_id) because a single run can owe a human several separate answers.
-	"slack_approval_deliveries",
+	// ‼️ THE FIVE SLACK TABLES ARE GONE AND THIS IS THE ENTRY THAT SAYS SO. `slack_connections`,
+	// `slack_thread_sessions`, `slack_reply_deliveries` (E19), `slack_message_turns` (E20) and
+	// `slack_approval_deliveries` (E23 T1) stood here until 000009_drop_slack_cutover_tables removed them.
+	// This ledger's own rule is why the removal is written down rather than just done: "a table this ledger
+	// does not name is a table its drop can go unnoticed" — so a drop deletes a NAME, and a name deleted in
+	// silence is the same gap from the other side.
+	//
+	// WHAT REPLACED THEM: apps/slack-bot, a separate application with its own pool and its own migrations.
+	// The correlation still happens; it does not happen in this schema. What the cutover left behind here
+	// was five tables with no reader, no writer, no inbound foreign key and no rows — measured before the
+	// drop, and the migration's header carries the four commands.
 	// The E24 T1 runner-fleet tables (000045): the hashed per-pool enrolment credential and the
 	// APPEND-ONLY issuance journal (self-re-asserting REVOKE). These two ARE new; runner_pools and
 	// runners above are not.
@@ -1725,12 +1726,24 @@ func TestMigration27Skills(t *testing.T) {
 	}
 }
 
-// TestMigration41SlackReplies pins the RETURN LEG's durable order-to-post (000041). Two properties earn the
-// migration and both are asserted at the DATABASE, not in Go: UNIQUE (run_id) is the exactly-once claim —
-// a second terminal transaction for the same run must insert NOTHING, whatever the caller believes — and
-// the session index is what keeps the enqueue (which runs on EVERY terminal transition in the deployment,
-// almost all of them non-Slack) off a sequential scan inside the hot transaction.
-func TestMigration41SlackReplies(t *testing.T) {
+// TestTheRetractionMarkerTheHistoryQueryFiltersOnSurvivedTheSlackCutover is what is LEFT of three tests
+// that pinned migrations 000041/000042/000043, and it is here rather than deleted with them because their
+// subjects did not all die together.
+//
+// ‼️ THE THREE TESTS WENT WITH THEIR TABLES (000009_drop_slack_cutover_tables, 2026-08-07). They asserted
+// the shape of `slack_reply_deliveries`, `slack_message_turns` and their columns — the UNIQUE (run_id)
+// exactly-once claim, the due index, the requester handle — and the cutover moved every one of those
+// properties to apps/slack-bot, which owns them in its own migrations against its own database. A test
+// whose subject no longer exists is not a test that fails; it is a test that must be deleted, and the
+// reason it is written down here is that the alternative reads identically: three tests quietly removed.
+//
+// ‼️ AND ONE ASSERTION DID NOT DIE WITH THEM, WHICH IS WHY THIS FUNCTION EXISTS. `responses.retracted_at`
+// is on a LIVE table and has a live writer and a live reader — `storage/queries/commands.sql` sets it
+// (ClearSession's own comment: "the row survives, it just stops counting") and `storage/queries/sessions.sql`
+// excludes retracted rows from the derived session label. Deleting all three tests wholesale would have
+// taken this with them, and nothing would have gone red: the column would still exist, and the claim that
+// it must would simply have stopped being made.
+func TestTheRetractionMarkerTheHistoryQueryFiltersOnSurvivedTheSlackCutover(t *testing.T) {
 	cs := openHarness(t)
 	ctx := context.Background()
 	pool := cs.Pool()
@@ -1738,182 +1751,34 @@ func TestMigration41SlackReplies(t *testing.T) {
 	// A second boot re-runs the whole chain; every object is IF NOT EXISTS / idempotent.
 	if err := cs.Migrate(ctx); err != nil {
 		t.Fatalf("re-Migrate() error = %v", err)
-	}
-	if !tableExists(t, pool, "slack_reply_deliveries") {
-		t.Fatal("after apply, slack_reply_deliveries is missing")
-	}
-	if !indexExists(t, pool, "slack_reply_deliveries_due_idx") || !indexExists(t, pool, "slack_thread_sessions_session_idx") {
-		t.Fatal("after apply, a 000041 index is missing — the enqueue would scan slack_thread_sessions on every terminal transition")
-	}
-
-	tenant, _, runID := seedRun(t, pool)
-	connID := newID("slkc")
-	exec(t, pool,
-		`INSERT INTO slack_connections (id, project_id, team_id, signing_secret_ref)
-		 VALUES ($1,$2,$3,'slack/signing')`,
-		connID, tenant.Project, strings.ToUpper(newID("T")))
-
-	insert := func() error {
-		_, err := pool.Exec(storage.WithSystemScope(ctx),
-			`INSERT INTO slack_reply_deliveries
-			   (id, project_id, connection_id, run_id, channel_id, thread_ts, run_state)
-			 VALUES ($1,$2,$3,$4,'C1','100.0','completed')`,
-			newID("sdel"), tenant.Project, connID, runID)
-		return err
-	}
-	if err := insert(); err != nil {
-		t.Fatalf("first slack_reply_deliveries insert error = %v", err)
-	}
-	if err := insert(); err == nil {
-		t.Fatal("a SECOND order-to-post for the same run was accepted; UNIQUE (run_id) is the whole exactly-once claim")
-	}
-
-	// An unbound workspace must take its undelivered replies with it: a connection we no longer hold is one
-	// we must not post into.
-	exec(t, pool, `DELETE FROM slack_connections WHERE id = $1`, connID)
-	var left int
-	if err := pool.QueryRow(storage.WithSystemScope(ctx),
-		`SELECT count(*) FROM slack_reply_deliveries WHERE connection_id = $1`, connID).Scan(&left); err != nil {
-		t.Fatalf("count orphaned deliveries: %v", err)
-	}
-	if left != 0 {
-		t.Fatalf("%d delivery row(s) outlived their connection, want 0", left)
-	}
-}
-
-// TestMigration42SlackMessageTurns is 000042: the handle from a Slack MESSAGE to the turn it became, and the
-// withdrawn marker the history query filters on. Both exist because of one live defect and its mirror image —
-// the app answered a deleted message, and a deleted message that stays in the history goes on shaping every
-// later answer in the thread.
-func TestMigration42SlackMessageTurns(t *testing.T) {
-	cs := openHarness(t)
-	ctx := context.Background()
-	pool := cs.Pool()
-
-	// A second boot re-runs the whole chain; every object is IF NOT EXISTS / idempotent.
-	if err := cs.Migrate(ctx); err != nil {
-		t.Fatalf("re-Migrate() error = %v", err)
-	}
-	if !tableExists(t, pool, "slack_message_turns") {
-		t.Fatal("after apply, slack_message_turns is missing")
 	}
 	if !columnExists(t, pool, "responses", "retracted_at") {
-		t.Fatal("after apply, responses.retracted_at is missing — nothing could withdraw a turn from history")
+		t.Fatal("after apply, responses.retracted_at is missing — a cleared session's rows would keep counting toward the history the next answer is shaped by")
 	}
 
-	tenant, sessionID, _ := seedRun(t, pool)
-	connID := newID("slkc")
-	exec(t, pool,
-		`INSERT INTO slack_connections (id, project_id, team_id, signing_secret_ref)
-		 VALUES ($1,$2,$3,'slack/signing')`,
-		connID, tenant.Project, strings.ToUpper(newID("T")))
-	responseID := newID("resp")
-	exec(t, pool, `INSERT INTO responses (id, project_id, session_id) VALUES ($1,$2,$3)`,
-		responseID, tenant.Project, sessionID)
-
-	insert := func() error {
-		_, err := pool.Exec(storage.WithSystemScope(ctx),
-			`INSERT INTO slack_message_turns
-			   (id, project_id, connection_id, team_id, channel_id, message_ts, response_id, session_id)
-			 VALUES ($1,$2,$3,'T1','C1','100.0',$4,$5)`,
-			newID("slkmt"), tenant.Project, connID, responseID, sessionID)
-		return err
-	}
-	if err := insert(); err != nil {
-		t.Fatalf("first slack_message_turns insert error = %v", err)
-	}
-	// ONE TURN PER MESSAGE. Slack delivers a top-level mention twice (app_mention plus its message.channels
-	// twin) under a single message ts, and a redelivery replays onto the same response: the unique index is
-	// what makes the FIRST response the turn instead of the last writer winning.
-	if err := insert(); err == nil {
-		t.Fatal("a SECOND turn was accepted for one message ts; the handle would then point at whichever event arrived last")
+	// AND THE FIVE TABLES ARE REALLY GONE, on a database that ran the WHOLE chain rather than one built
+	// from the current baseline. That is the half a `tableExists` check cannot be swapped for: 000001 still
+	// creates them and 000002 still secures them, so a chain that stopped at 8 has them and a chain that
+	// reached 9 does not. This is the only place that difference is asserted.
+	for _, dead := range []string{
+		"slack_connections", "slack_thread_sessions", "slack_reply_deliveries",
+		"slack_message_turns", "slack_approval_deliveries",
+	} {
+		if tableExists(t, pool, dead) {
+			t.Errorf("%s still exists after the chain — 000009 did not drop it, and the schema still carries a table with no reader, no writer and no rows", dead)
+		}
 	}
 
-	// A reaped response takes its handle with it, so nothing is left pointing at a turn that no longer exists.
-	exec(t, pool, `DELETE FROM responses WHERE id = $1`, responseID)
-	var left int
+	// THEIR POLICIES WENT WITH THEM. A policy is owned by its table, so this should be free — and it is
+	// asserted anyway because this tree has recorded the opposite shape twice: a rule whose selector went
+	// empty still reads as live, and pg_policies is where that would show.
+	var policies int
 	if err := pool.QueryRow(storage.WithSystemScope(ctx),
-		`SELECT count(*) FROM slack_message_turns WHERE response_id = $1`, responseID).Scan(&left); err != nil {
-		t.Fatalf("count orphaned turn handles: %v", err)
+		`SELECT count(*) FROM pg_policies WHERE tablename LIKE 'slack\_%'`).Scan(&policies); err != nil {
+		t.Fatalf("count the policies left on the dropped tables: %v", err)
 	}
-	if left != 0 {
-		t.Fatalf("%d turn handle(s) outlived their response, want 0", left)
-	}
-}
-
-// TestMigration43SlackRequester is 000043: the DURABLE identity the agent's own question is addressed to.
-// Two properties earn it and both are asserted at the database. The DEFAULT is the fail-closed value — an
-// insert that names no requester gets ”, which is what every row written before today carries and what the
-// renderer treats as "send the words, mention nobody" — and the id CASCADES with the row it hangs off, so a
-// reaped response or an unbound workspace cannot leave an address behind pointing at a conversation that no
-// longer exists.
-func TestMigration43SlackRequester(t *testing.T) {
-	cs := openHarness(t)
-	ctx := context.Background()
-	pool := cs.Pool()
-
-	// A second boot re-runs the whole chain; both ALTERs are ADD COLUMN IF NOT EXISTS.
-	if err := cs.Migrate(ctx); err != nil {
-		t.Fatalf("re-Migrate() error = %v", err)
-	}
-	if !columnExists(t, pool, "slack_message_turns", "requester_user_id") {
-		t.Fatal("after apply, slack_message_turns.requester_user_id is missing — admission would have nowhere to record who asked")
-	}
-	if !columnExists(t, pool, "slack_reply_deliveries", "requester_user_id") {
-		t.Fatal("after apply, slack_reply_deliveries.requester_user_id is missing — the reply pump could not address the mention")
-	}
-
-	tenant, sessionID, runID := seedRun(t, pool)
-	connID := newID("slkc")
-	exec(t, pool,
-		`INSERT INTO slack_connections (id, project_id, team_id, signing_secret_ref)
-		 VALUES ($1,$2,$3,'slack/signing')`,
-		connID, tenant.Project, strings.ToUpper(newID("T")))
-	responseID := newID("resp")
-	exec(t, pool, `INSERT INTO responses (id, project_id, session_id) VALUES ($1,$2,$3)`,
-		responseID, tenant.Project, sessionID)
-
-	// FAIL-CLOSED BACKFILL: the shape of every row that existed before this migration. An insert that names
-	// no requester must be accepted and must read back as the empty string — not NULL, which would make every
-	// consumer decide what a missing id means.
-	exec(t, pool,
-		`INSERT INTO slack_reply_deliveries
-		   (id, project_id, connection_id, run_id, channel_id, thread_ts, run_state)
-		 VALUES ($1,$2,$3,$4,'C1','100.0','completed')`,
-		newID("sdel"), tenant.Project, connID, runID)
-	var legacy string
-	if err := pool.QueryRow(storage.WithSystemScope(ctx),
-		`SELECT requester_user_id FROM slack_reply_deliveries WHERE run_id = $1`, runID).Scan(&legacy); err != nil {
-		t.Fatalf("read the defaulted requester: %v", err)
-	}
-	if legacy != "" {
-		t.Fatalf("a delivery written without a requester reads back %q, want the empty fail-closed value", legacy)
-	}
-
-	exec(t, pool,
-		`INSERT INTO slack_message_turns
-		   (id, project_id, connection_id, team_id, channel_id, message_ts, response_id, session_id, requester_user_id)
-		 VALUES ($1,$2,$3,'T1','C1','100.0',$4,$5,'U0ASKER')`,
-		newID("slkmt"), tenant.Project, connID, responseID, sessionID)
-
-	// The identity cannot outlive what it describes: reaping the response takes the turn handle AND the id
-	// with it, so a purge cannot leave a person's id attached to a conversation nobody can read.
-	//
-	// THE COUNT IS TENANT-SCOPED, and it was not until E21 T7's exit gate co-ran this package with the store
-	// suite against ONE Postgres. `U0ASKER` is a shared fixture id — the store tier's mention test uses the
-	// same literal — so an unscoped sweep counts ANOTHER test's rows and fails on work this test never did.
-	// The same shape defeated an E19 T6 outbound assertion for the same reason: a global count is not an
-	// assertion about this test's cascade, it is an assertion about whatever else touched the database.
-	exec(t, pool, `DELETE FROM responses WHERE id = $1`, responseID)
-	var left int
-	if err := pool.QueryRow(storage.WithSystemScope(ctx),
-		`SELECT count(*) FROM slack_message_turns
-		  WHERE  project_id = $1 AND requester_user_id = 'U0ASKER'`,
-		tenant.Project).Scan(&left); err != nil {
-		t.Fatalf("count orphaned requesters: %v", err)
-	}
-	if left != 0 {
-		t.Fatalf("%d requester id(s) outlived the turn they describe, want 0", left)
+	if policies != 0 {
+		t.Errorf("%d row-level-security policy/policies still name a slack_ table, want 0", policies)
 	}
 }
 

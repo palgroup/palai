@@ -119,6 +119,20 @@ var migrationUp8 string
 //go:embed migrations/000008_machine_tenant_exclusivity.down.sql
 var migrationDown8 string
 
+// 000009 removes the five E19/E20/E23 Slack tables the cutover emptied. The correlation they existed for
+// moved to apps/slack-bot — a separate application with its own pool and its own migrations — and what
+// stayed here was schema with no reader, no writer, no inbound foreign key and no rows.
+//
+// It is the one migration in this chain that DELETES rather than adds, and its down says why it does not
+// put them back: a hand-copied reversal of 000001's DDL would be a second spelling nothing compares to the
+// first.
+//
+//go:embed migrations/000009_drop_slack_cutover_tables.up.sql
+var migrationUp9 string
+
+//go:embed migrations/000009_drop_slack_cutover_tables.down.sql
+var migrationDown9 string
+
 //go:embed queries/agents.sql
 var agentsSQL string
 
@@ -272,7 +286,7 @@ var knowledgeSQL string
 // the whole chain is safe to re-run — which it is, in full, on every boot.
 func MigrationUp() string {
 	return migrationUp + "\n" + migrationUp2 + "\n" + migrationUp3 + "\n" + migrationUp4 + "\n" + migrationUp5 +
-		"\n" + migrationUp6 + "\n" + migrationUp7 + "\n" + migrationUp8
+		"\n" + migrationUp6 + "\n" + migrationUp7 + "\n" + migrationUp8 + "\n" + migrationUp9
 }
 
 // MigrationDown reverses MigrationUp in the opposite order: 000007 drops the device-key uniqueness and the
@@ -293,7 +307,7 @@ func MigrationUp() string {
 // reddened twenty-five component fixtures that never mention a secret. Every other link here is reversible
 // unconditionally.
 func MigrationDown() string {
-	return migrationDown8 + "\n" + migrationDown7 + "\n" + migrationDown6 + "\n" + migrationDown5 + "\n" + migrationDown4 + "\n" + migrationDown3 + "\n" +
+	return migrationDown9 + "\n" + migrationDown8 + "\n" + migrationDown7 + "\n" + migrationDown6 + "\n" + migrationDown5 + "\n" + migrationDown4 + "\n" + migrationDown3 + "\n" +
 		migrationDown2 + "\n" + migrationDown
 }
 

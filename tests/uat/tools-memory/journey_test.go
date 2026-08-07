@@ -64,7 +64,11 @@ func TestToolsMemoryJourneyRunsThroughTheOperatorEntryPoint(t *testing.T) {
 	// journey tier, which is why it is not in this list — its compose-tier proof is `e2e` and is not run here.
 	for _, backing := range []struct{ test, why string }{
 		{"TestClearSessionEmptiesHistoryAndKeepsTheSessionAlive", "TLM-001 — the durable half of `clear`"},
-		{"TestMigration43SlackRequester", "TLM-003 — the requester column survives a restart (the mention-mint half is Docker-free, step [2/4])"},
+		// TLM-003 had exactly ONE backing leg in this tier and it was TestMigration43SlackRequester,
+		// withdrawn 2026-08-07 with the tables it pinned (000009_drop_slack_cutover_tables). Its other
+		// six proofs are adapters/integrations/slack unit tests that ride `make verify`, so the case is
+		// still proven — it is this JOURNEY tier that no longer has a leg of its own to name for it, and
+		// that is written down rather than left as a shorter list nobody can tell from a drift.
 		{"TestARegistryToolDispatchesThroughTheRealOrchestratorAndTheResultReachesTheEngine", "TLM-004 — committed, then delivered"},
 		{"TestToolsMemoryJourney", "TLM-005 — the stored-search-byte sweep over what the run persisted"},
 	} {

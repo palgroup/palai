@@ -96,7 +96,7 @@ var expectedToolsMemoryCatalog = map[string]struct {
 	// two refusals (a model-chosen id, a model-written token) and the migration that makes the identity
 	// durable — plus the E20 AST guard, because a renderer that started minting actionable elements while
 	// minting mentions would break the older rule this one is built beside.
-	"TLM-003": {"component-real", []string{
+	"TLM-003": {"unit", []string{
 		"adapters/integrations/slack/mention_test.go:TestAMentionTheModelWroteIsStillNeutralized",
 		"adapters/integrations/slack/mention_test.go:TestMentionMintsExactlyOneIDAndItIsTheDeliveryRows",
 		"adapters/integrations/slack/mention_test.go:TestTheModelCannotChooseWhoIsMentioned",
@@ -108,7 +108,9 @@ var expectedToolsMemoryCatalog = map[string]struct {
 		// note in tests/uat/cases/TLM-003/case.yaml.
 		"adapters/integrations/slack/mention_test.go:TestAMentionRendersAsAnOrdinarySection",
 		"adapters/integrations/slack/blocks_test.go:TestNoFileButInteractionsMintsAnActionableElement",
-		"tests/component/postgres/migration_test.go:TestMigration43SlackRequester",
+		// TestMigration43SlackRequester WITHDRAWN 2026-08-07 — 000009_drop_slack_cutover_tables dropped the
+		// two tables whose requester_user_id columns it pinned. The identity lives in apps/slack-bot now.
+		// See the matching WITHDRAWN note in tests/uat/cases/TLM-003/case.yaml.
 	}},
 	// E21 T4 — the tool surface. Four of these drive the REAL Orchestrator, which is the gap §3.6 D3 measured:
 	// every prior MCP proof stopped at the broker, and the only engine-level evidence was behind a live tag.

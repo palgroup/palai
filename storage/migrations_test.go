@@ -62,12 +62,12 @@ func TestOrderedMigrationsIsContiguousVersionOrder(t *testing.T) {
 	}
 
 	head := migrations[len(migrations)-1]
-	if head.Version != 8 || head.Name != "machine_tenant_exclusivity" {
-		t.Fatalf("chain head = %06d_%s, want 000008_machine_tenant_exclusivity", head.Version, head.Name)
+	if head.Version != 9 || head.Name != "drop_slack_cutover_tables" {
+		t.Fatalf("chain head = %06d_%s, want 000009_drop_slack_cutover_tables", head.Version, head.Name)
 	}
 	penultimate := migrations[len(migrations)-2]
-	if penultimate.Version != 7 || penultimate.Name != "device_identity_and_pool_isolation" {
-		t.Fatalf("penultimate migration = %06d_%s, want 000007_device_identity_and_pool_isolation", penultimate.Version, penultimate.Name)
+	if penultimate.Version != 8 || penultimate.Name != "machine_tenant_exclusivity" {
+		t.Fatalf("penultimate migration = %06d_%s, want 000008_machine_tenant_exclusivity", penultimate.Version, penultimate.Name)
 	}
 
 	// The concatenated MigrationUp() must carry exactly the same forward SQL the per-migration path
