@@ -3,6 +3,7 @@ package device
 import (
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -57,6 +58,43 @@ func TestRootReachesTheUsersSessionThroughAsuser(t *testing.T) {
 	for i := range want {
 		if got[i] != want[i] {
 			t.Fatalf("launchctlFor(%d) = %v, want %v", other, got, want)
+		}
+	}
+}
+
+// TestTheAgentPlistUsesTheONLYBooleanFormLaunchdAccepts — `plutil` SAYS BOTH ARE VALID AND launchd
+// ACCEPTS ONE.
+//
+// encoding/xml writes an empty element as `<true></true>`. launchd refuses that file with
+// `Bootstrap failed: 5: Input/output error` — an errno, not a sentence, so nothing in the message says
+// "your plist is malformed". Every agent this package rendered was therefore unloadable on macOS, and
+// it survived because `plutil -lint` calls the long form valid: the file passes every check an author
+// would run and is rejected by the only reader that matters.
+//
+// It cost three fixes to reach: the domain was wrong (gui/0), then the namespace was wrong (no asuser),
+// and the SAME errno came back both times. deploy/macos's hand-written daemon plist uses `<true/>`,
+// which is exactly why the daemon installed while the agent did not.
+func TestTheAgentPlistUsesTheONLYBooleanFormLaunchdAccepts(t *testing.T) {
+	body, err := RenderLaunchAgent(ServiceSpec{
+		Executable: "/usr/local/bin/palai",
+		ConfigFile: "/tmp/agent.json",
+		LogFile:    "/tmp/agent.log",
+	})
+	if err != nil {
+		t.Fatalf("RenderLaunchAgent: %v", err)
+	}
+	rendered := string(body)
+	for _, refused := range []string{"<true></true>", "<false></false>"} {
+		if strings.Contains(rendered, refused) {
+			t.Errorf("the rendered agent carries %s — launchd answers errno 5 and the machine finishes "+
+				"enrolled with no agent running:\n%s", refused, rendered)
+		}
+	}
+	// NON-VACUITY: a renderer that stopped emitting booleans at all would pass the loop above while
+	// dropping RunAtLoad and KeepAlive, which is how an agent stops coming back after a reboot.
+	for _, needed := range []string{"<key>RunAtLoad</key>", "<key>KeepAlive</key>", "<true/>"} {
+		if !strings.Contains(rendered, needed) {
+			t.Errorf("the rendered agent is missing %s — it would load once and never return:\n%s", needed, rendered)
 		}
 	}
 }

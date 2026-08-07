@@ -1,6 +1,7 @@
 package device
 
 import (
+	"bytes"
 	"encoding/xml"
 	"fmt"
 	"os"
@@ -97,6 +98,17 @@ func RenderLaunchAgent(spec ServiceSpec) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("render launch agent: %w", err)
 	}
+	// ‼️ launchd REFUSES `<true></true>` AND ACCEPTS ONLY `<true/>`, and it says so with an errno rather
+	// than a sentence: `Bootstrap failed: 5: Input/output error`. encoding/xml writes an empty element in
+	// the long form, so every agent this package has ever rendered was unloadable on macOS — measured on
+	// a real Mac on 2026-08-07, after the domain and the asuser wrapping had both been corrected and the
+	// SAME errno came back a third time.
+	//
+	// `plutil -lint` CALLS BOTH FORMS VALID, which is why this survived: the file passes every check an
+	// author would run and is rejected by the only reader that matters. deploy/macos's daemon plist is
+	// hand-written and uses the short form, which is why the daemon installs and the agent did not.
+	body = bytes.ReplaceAll(body, []byte("<true></true>"), []byte("<true/>"))
+	body = bytes.ReplaceAll(body, []byte("<false></false>"), []byte("<false/>"))
 	header := `<?xml version="1.0" encoding="UTF-8"?>` + "\n" +
 		`<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">` + "\n"
 	return append([]byte(header), append(body, '\n')...), nil
