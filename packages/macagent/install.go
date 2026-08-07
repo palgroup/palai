@@ -82,9 +82,7 @@ func (i Install) Apply(ctx context.Context) (Health, error) {
 	}
 	client := i.Client
 	if client == "" {
-		if u, err := user.Current(); err == nil {
-			client = u.Username
-		}
+		client = authorisedClient(os.Getenv, user.Current)
 	}
 	if client == "" {
 		return Health{}, errors.New("no account to authorise: group membership is the entire credential, and a group with no members is a daemon nothing can reach")
@@ -175,4 +173,26 @@ func (i Install) stagePlist() (string, error) {
 		return "", err
 	}
 	return f.Name(), nil
+}
+
+// authorisedClient is the account that must end up in the daemon's group — the one that will REACH the
+// socket, which is not the one running this install.
+//
+// UNDER sudo, user.Current() IS root, and authorising root authorises nobody: the control plane on a
+// native Mac runs as the human, and the human is then denied on a socket whose group membership is the
+// entire credential. Measured on a real Mac on 2026-08-07 — the daemon installed, answered root, and
+// told everyone else "connect: permission denied" while the machine advertised `accounts` isolation it
+// could not actually deliver.
+//
+// It is the third place in this enrolment where "who am I" and "who is this for" were the same question
+// with two answers, after the LaunchAgent's GUI domain and its bootstrap namespace. SUDO_USER is what
+// carries the second answer into a root process.
+func authorisedClient(getenv func(string) string, current func() (*user.User, error)) string {
+	if name := strings.TrimSpace(getenv("SUDO_USER")); name != "" && name != "root" {
+		return name
+	}
+	if u, err := current(); err == nil {
+		return u.Username
+	}
+	return ""
 }
