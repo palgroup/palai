@@ -50,6 +50,7 @@ import (
 	"github.com/palgroup/palai/packages/coordinator"
 	"github.com/palgroup/palai/packages/coordinator/recovery"
 	"github.com/palgroup/palai/packages/localca"
+	"github.com/palgroup/palai/packages/macagent"
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 	"github.com/palgroup/palai/storage"
@@ -242,11 +243,13 @@ func main() {
 	// index — so constructing one here and another in startDispatch would give the releaser an empty map,
 	// and every release would find nothing to destroy while reporting success. That is a leak that looks
 	// exactly like working code, which is why the value is built once and threaded.
-	var sessionAccounts *execution.SlotAccounts
-	if wrapper := os.Getenv("PALAI_SESSION_ACCOUNT_HELPER"); wrapper != "" {
-		sessionAccounts = execution.NewSudoSessionAccounts(wrapper)
-		routerOpts = append(routerOpts, api.WithSessionAccounts(sessionAccounts))
-	}
+	// PER-SESSION ISOLATION IS ON WHENEVER palai-agentd IS REACHABLE, and that is the whole condition.
+	// It was `PALAI_SESSION_ACCOUNT_HELPER` naming a sudo wrapper until 2026-08-07 — an env var nobody
+	// set, pointing at a path that wanted a sudoers entry the daemon exists to make unnecessary. So the
+	// switch is the socket: a Mac that ran `sudo palai agentd install` isolates every session, and one
+	// that did not says so at the first Acquire instead of silently running as the operator's uid.
+	sessionAccounts := execution.NewDaemonSessionAccounts(macagent.DefaultSocketPath)
+	routerOpts = append(routerOpts, api.WithSessionAccounts(sessionAccounts))
 	if secretStore != nil {
 		routerOpts = append(routerOpts, api.WithSecretRefs(secretStore))
 		// THE VERIFY ACTION'S REAL WORK (E29), on the SAME condition and the SAME store as the secret-ref

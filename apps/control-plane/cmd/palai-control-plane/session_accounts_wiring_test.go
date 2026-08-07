@@ -27,9 +27,9 @@ func TestSessionAccountsAreOneInstanceAcrossBothHalves(t *testing.T) {
 	}
 	body := string(src)
 
-	constructions := regexp.MustCompile(`execution\.NewSudoSessionAccounts\(`).FindAllString(body, -1)
+	constructions := regexp.MustCompile(`execution\.NewDaemonSessionAccounts\(`).FindAllString(body, -1)
 	if len(constructions) != 1 {
-		t.Fatalf("execution.NewSudoSessionAccounts is called %d times; it must be called exactly ONCE. Two "+
+		t.Fatalf("execution.NewDaemonSessionAccounts is called %d times; it must be called exactly ONCE. Two "+
 			"instances do not share the map of which session holds which slot, so the releasing half would "+
 			"find an empty map, destroy nothing, and report success — one leaked account per session",
 			len(constructions))
@@ -52,8 +52,12 @@ func TestSessionAccountsAreOneInstanceAcrossBothHalves(t *testing.T) {
 		t.Error("startDispatch does not take the accounts as a parameter, so the acquire half is reading " +
 			"something other than the value the release half holds")
 	}
-	if n := strings.Count(body, `os.Getenv("PALAI_SESSION_ACCOUNT_HELPER")`); n != 1 {
-		t.Errorf("PALAI_SESSION_ACCOUNT_HELPER is read %d times; it must be read ONCE. A second read is how "+
-			"two instances get built without either call site looking wrong", n)
+	// The daemon socket is named ONCE, for the reason the env var was read once before it: a second
+	// mention is how a second instance gets built without either call site looking wrong. It replaced
+	// PALAI_SESSION_ACCOUNT_HELPER on 2026-08-07 — an env var nobody set, pointing at a sudo wrapper the
+	// daemon exists to make unnecessary, which meant isolation was off on every Mac that ran this.
+	if n := strings.Count(body, "macagent.DefaultSocketPath"); n != 1 {
+		t.Errorf("macagent.DefaultSocketPath is named %d times in the composition root; it must be named "+
+			"ONCE, or two SlotAccounts can dial the same daemon while holding different slot maps", n)
 	}
 }

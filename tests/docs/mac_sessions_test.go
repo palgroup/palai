@@ -269,10 +269,9 @@ func TestMacSessionsDocIsSourcedAndHonest(t *testing.T) {
 // TestTheAccountsPageTellsAnOperatorHowTheControlPlaneUSESTheAccounts — CREATING A BOUNDARY AND USING IT
 // ARE TWO CLAIMS, AND THIS PAGE MADE ONLY THE FIRST.
 //
-// ‼️ MEASURED 2026-08-07: docs/operations/mac-sessions.md named `PALAI_SESSION_ACCOUNT_HELPER` and
-// `palai-session-account` ZERO times. §3 tells an operator to create the accounts and §4 proves they are
+// ‼️ MEASURED 2026-08-07: docs/operations/mac-sessions.md named the step that switches the boundary on ZERO times. §3 tells an operator to create the accounts and §4 proves they are
 // isolated FROM EACH OTHER — and nothing on the page said the control plane still runs every session's
-// commands as its own uid until the sudoers entry is installed and the variable is set. An operator who
+// commands as its own uid until palai-agentd is installed. An operator who
 // followed it end to end got four accounts, a green `verify`, and no boundary. §4's own title is "a
 // boundary you did not test is a boundary you do not have"; the untested half was the one it omitted.
 //
@@ -304,8 +303,7 @@ func TestTheAccountsPageTellsAnOperatorHowTheControlPlaneUSESTheAccounts(t *test
 		subjects++
 		rel := strings.TrimPrefix(page, root+"/")
 		for _, owed := range []struct{ token, why string }{
-			{"palai-session-account", "the privileged wrapper the control plane invokes; without its sudoers entry the plane cannot mint an account at all"},
-			{"PALAI_SESSION_ACCOUNT_HELPER", "the variable that makes the control plane USE the accounts; unset, every session's commands run as the plane's own uid"},
+			{"palai agentd install", "the one command that makes the control plane USE the accounts; without the daemon every session runs as the control plane's own uid"},
 		} {
 			if !strings.Contains(text, owed.token) {
 				t.Errorf("%s tells an operator to bring accounts up with `--mode accounts` and never names %s — %s. "+

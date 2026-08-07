@@ -191,8 +191,8 @@ services:
       #   * PALAI_WORKSPACE_ROOT — capabilities.go gates the whole `workspaces` capability on it, and no
       #     service here mounts a workspace tree. Passing it would let an operator switch the capability
       #     on for a deployment that cannot serve it; `palai up --native` remains the path.
-      #   * PALAI_SESSION_ACCOUNT_HELPER — a privileged HOST path that mints macOS session accounts. A
-      #     Linux container has none, and a path interpolated into one names a file that is not there.
+      #   * per-session macOS accounts — minted by palai-agentd over its root-owned unix socket, which a
+      #     Linux container has no business reaching. A Mac deployment runs the control plane natively.
       # tests/docs/deployment_reachability_test.go holds both, with these reasons, and fails on a 42nd.
       PALAI_PUBLIC_BASE_URL: ${PALAI_PUBLIC_BASE_URL:-}
       PALAI_TOOL_CALLBACK_BASE_URL: ${PALAI_TOOL_CALLBACK_BASE_URL:-}

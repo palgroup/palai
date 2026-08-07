@@ -670,17 +670,6 @@ var deploymentCatalogue = []catalogueEntry{
 		ReaderFile: cpMain, ReaderFunc: "a2aPusherFromEnv",
 	},
 
-	{
-		Name: "PALAI_SESSION_ACCOUNT_HELPER", Group: "shell", Kind: kindPath, Default: "unset — no privileged path exists; every session's commands run as the agent's own uid, which is same-customer accident isolation and NOT a boundary",
-		Effect: "The program this process invokes as `sudo -n <helper> {create|destroy} NN` to mint and " +
-			"destroy a macOS session account per slot. It is the MOST PRIVILEGED thing this deployment does, " +
-			"and setting it is what turns `accounts` isolation on: with it, each session gets its own uid and " +
-			"its own home, and a release takes the whole account. `-n` is deliberate — without a sudoers " +
-			"entry sudo would PROMPT, and a control plane has no terminal, so a missing entry would hang " +
-			"allocation provisioning instead of failing it.",
-		Mutability: mutabilityBringUp, ChangeWith: changeCP,
-		ReaderFile: cpMain, ReaderFunc: "main",
-	},
 
 	{
 		Name: "PALAI_CAPABILITY_WORKER_LISTEN_ADDR", Group: "egress", Kind: kindValue, Default: "unset — the capability-worker gateway is NOT MOUNTED, and no shipped deployment config sets it",
@@ -1306,10 +1295,6 @@ var nonDesiredReason = map[string]string{
 	"PALAI_RUNNER_SERVER_CERT":    "a path to the gateway listener's certificate; its SANs decide which addresses a runner may dial.",
 	"PALAI_RUNNER_SERVER_KEY":     "a path to the gateway listener's private key.",
 	"PALAI_ENROLLMENT_TOKEN_FILE": "a path to the credential a machine spends to join the fleet.",
-	"PALAI_SESSION_ACCOUNT_HELPER": "a path, and the sharpest one on this list after the master key: the " +
-		"file it names is executed as ROOT, by this process, on every allocation. A form that wrote it would " +
-		"be arbitrary privileged execution reached through a settings screen — the sudoers entry that admits " +
-		"it is installed by an administrator, and the path must be the one they admitted.",
 	"PALAI_METRICS_DISK_PATH": "a path. Naming which filesystem a process statfs's from a web form is a " +
 		"probe primitive wearing a settings control, and the value is read once when the collector is built.",
 	"PALAI_FAKE_SCRIPT_FILE": "a path, and the file it names decides what a run's model APPEARS to say. " +

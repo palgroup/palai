@@ -20,7 +20,6 @@ func fakeSlots() (*SlotAccounts, *[]string, *error) {
 	a := &SlotAccounts{
 		slots: map[string]int{},
 		held:  map[int]bool{},
-		name:  func(slot int) string { return "palai-s" + string(rune('0'+slot/10)) + string(rune('0'+slot%10)) },
 		run: func(_ context.Context, verb string, slot int) error {
 			calls = append(calls, verb)
 			return failWith

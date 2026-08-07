@@ -67,33 +67,29 @@ explicit is *not* a boundary. This page omitted them until 2026-08-07; the omiss
 than quietly filled because the shape it produces — a green verify over an unused mechanism — is exactly
 what §4's own title warns about.
 
-**One. Grant the wrapper, and read the grant first.** The privileged surface is
-`scripts/ops/palai-session-account`: two verbs, one two-digit index, no pass-through. It PRINTS the sudoers
-line rather than writing it, because a file that grants passwordless root is one an operator reads before
-it exists.
+**One. Install the daemon. That is the whole of it.**
 
 ```sh
-scripts/ops/palai-session-account install-sudoers "$(id -un)"
-# read the line it prints, then:
-sudo tee /etc/sudoers.d/palai-session-account   # paste it, then Ctrl-D
-sudo chmod 0440 /etc/sudoers.d/palai-session-account
-sudo visudo -cf /etc/sudoers.d/palai-session-account   # must say "parsed OK"
+sudo palai agentd install
 ```
 
-**Two. Point the control plane at it.** `PALAI_SESSION_ACCOUNT_HELPER` is an absolute path, and its default
-is unset — which the deployment surface reports in those words: *"no privileged path exists; every session's
-commands run as the agent's own uid, which is same-customer accident isolation and NOT a boundary"*.
+`palai-agentd` owns session accounts on this Mac. It is a root LaunchDaemon reached over a unix socket
+whose owning group is the entire credential, and the verb set on the other side is closed — create,
+delete, list, spawn, version, no pass-through. **No sudoers entry, and no password after this one
+command.** That is why the daemon exists rather than a wrapper: there are a hundred of these machines and
+nobody types a password on them, and `sudo` wants a password, a TTY the control plane does not have, and
+grants everything the named binary can be argued into doing.
 
-```sh
-PALAI_SESSION_ACCOUNT_HELPER=/abs/path/to/scripts/ops/palai-session-account   # then restart the control plane
-```
+> **THIS PAGE DESCRIBED A SUDO WRAPPER UNTIL 2026-08-07, AND THE CONTROL PLANE NEVER CALLED THE DAEMON.**
+> The wrapper wanted a sudoers line an operator had to paste, and an env var — `PALAI_SESSION_ACCOUNT_HELPER`
+> — that had to be set afterwards, in that order, or every shell command failed closed. Nobody set it, so
+> every session on every Mac ran as the control plane's own uid, which §7 is explicit is *not* a boundary.
+> The daemon had already shipped and explained in its own header why sudo was the wrong tool; what was
+> missing was the call. There is no longer a variable to set and no longer a file to paste: a Mac that ran
+> the command above isolates every session, and one that did not is told so at the first session rather
+> than running unisolated.
 
-**‼️ SET IT ONLY AFTER STEP ONE.** The variable is what makes the control plane REQUIRE an account per
-session; with it set and the sudoers entry missing, `sudo -n` fails immediately (that `-n` is deliberate — a
-prompt would hang a process with no terminal) and every shell command fails closed. That is the correct
-direction to fail in, and it is still an outage if the two steps are done out of order.
-
-**Three. Prove it end to end, on a real run.** The accounts existing and the plane using them are two
+**Two. Prove it end to end, on a real run.** The accounts existing and the plane using them are two
 different claims, and this is the one that measures the second:
 
 ```sh
@@ -104,8 +100,8 @@ It asserts two different things, and the difference is the whole point of this s
 
 - **The account exists and is released.** `palai-s*` accounts are counted before the run, after it and
   after the close: the count must RISE when a session starts and FALL when it ends. That is the half that
-  fails loudly when step one or step two is missing — its message asks *"is PALAI_SESSION_ACCOUNT_HELPER
-  set on the control plane?"*.
+  fails loudly when the daemon is not installed — its message asks whether `palai agentd install` has been
+  run on this Mac.
 - **The commands RAN as it.** §7 drives `id -un` through the session's own shell tool and reads the answer
   off the TOOL CALL's stdout rather than off the model's prose, then requires `palai-s…`. "An account was
   created" and "the command ran as it" are two claims and only the second one is a boundary; before

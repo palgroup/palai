@@ -34,8 +34,6 @@ var unreachableByDesign = map[string]string{
 	"PALAI_WORKSPACE_ROOT": "capabilities.go gates the whole `workspaces` capability on this one variable, " +
 		"and no service in compose mounts a workspace tree. Passing it would let an operator switch a " +
 		"capability on for a deployment that cannot serve it, so `palai up --native` stays the path.",
-	"PALAI_SESSION_ACCOUNT_HELPER": "a privileged HOST path that mints macOS session accounts. A Linux " +
-		"container has none, and a host path interpolated into one names a file that is not there.",
 	"PALAI_CAPABILITY_WORKER_LISTEN_ADDR": "a SHIPPED release manifest states that no deployment config " +
 		"sets it and that no deployed binary serves the capability map. Passing it here would make a " +
 		"released sentence false while every test of that sentence stayed green — which is what " +

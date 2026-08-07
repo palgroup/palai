@@ -345,7 +345,7 @@ if [ "$WITH_ACCOUNTS" -eq 1 ]; then
 	if [ "${after_accounts:-0}" -gt "${before_accounts:-0}" ]; then
 		ok "a session account was created" "$before_accounts -> $after_accounts"
 	else
-		no "a session account was created" "count unchanged at ${after_accounts:-0}; is PALAI_SESSION_ACCOUNT_HELPER set on the control plane?"
+		no "a session account was created" "count unchanged at ${after_accounts:-0}; has `sudo palai agentd install` been run on this Mac?"
 	fi
 else
 	skip "a session account was created" "run with --with-accounts (needs the sudoers entry)"

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sync"
 
@@ -138,25 +137,44 @@ type SlotAccounts struct {
 	// without a sudoers entry, which is also why the type is worth having: the mapping and the
 	// idempotence are the parts with behaviour, and neither needs root to be tested.
 	run func(ctx context.Context, verb string, slot int) error
-	// name formats the account for a slot, mirroring mac-sessions.sh's session_name.
-	name func(slot int) string
 }
 
-// NewSudoSessionAccounts wires the real privileged path: `sudo -n <wrapper> {create|destroy} NN`.
+// NewDaemonSessionAccounts wires the real privileged path: one line over palai-agentd's unix socket.
 //
-// -n IS NOT OPTIONAL. Without it a missing sudoers entry makes sudo PROMPT, and a control plane has no
-// terminal — the call would hang instead of failing, and a hang inside allocation provisioning is a run
-// that never starts and never says why. With it, a missing entry is an immediate error naming what is
-// not installed.
-func NewSudoSessionAccounts(wrapper string) *SlotAccounts {
+// IT IS A DAEMON AND NOT sudo, and the daemon's own header is where that argument lives: there are a
+// hundred of these machines and nobody types a password on them, so sudo is wrong three ways — it wants
+// a password, it wants a TTY a control plane does not have, and it hands over everything the named
+// binary can be argued into doing. Membership in the socket's group is the entire credential, and the
+// verb set on the other side is closed: create, delete, list, spawn, version. There is no pass-through.
+//
+// THE CONTROL PLANE HAD NO CALL TO IT UNTIL 2026-08-07. palai-agentd shipped, explained itself, and was
+// reachable by nothing — the only isolation path here was a sudo wrapper, so a Mac either wanted the
+// sudoers entry the design exists to avoid or ran every session as the operator's own uid. It ran as the
+// operator's own uid.
+func NewDaemonSessionAccounts(socketPath string) *SlotAccounts {
+	dial := macagent.UnixDialer(socketPath)
 	return &SlotAccounts{
 		slots: map[string]int{},
 		held:  map[int]bool{},
-		name:  func(slot int) string { return fmt.Sprintf("palai-s%02d", slot) },
 		run: func(ctx context.Context, verb string, slot int) error {
-			out, err := exec.CommandContext(ctx, "sudo", "-n", wrapper, verb, fmt.Sprintf("%02d", slot)).CombinedOutput()
+			// The two verbs this type spends are the two the daemon admits for an account. A third
+			// spelling would be a request the daemon refuses on shape, which is the right answer but a
+			// late one — so the mapping is total and explicit here.
+			var v macagent.Verb
+			switch verb {
+			case "create":
+				v = macagent.VerbCreate
+			case "destroy":
+				v = macagent.VerbDelete
+			default:
+				return fmt.Errorf("session account: %q is not a verb this daemon is asked for", verb)
+			}
+			resp, err := macagent.Ask(ctx, dial, macagent.Request{Verb: v, Slot: slot})
 			if err != nil {
-				return fmt.Errorf("session account %s slot %02d: %w: %s", verb, slot, err, out)
+				return fmt.Errorf("session account %s slot %02d: %w", verb, slot, err)
+			}
+			if !resp.OK {
+				return fmt.Errorf("session account %s slot %02d: daemon refused (%s): %s", verb, slot, resp.Class, resp.Message)
 			}
 			return nil
 		},
@@ -171,7 +189,11 @@ func (a *SlotAccounts) accountFor(slot int) (SessionAccount, error) {
 	if err != nil {
 		return SessionAccount{}, fmt.Errorf("session account: slot %d has no uid: %w", slot, err)
 	}
-	return SessionAccount{Name: a.name(slot), UID: uid, GID: macagent.AccountGID}, nil
+	name, err := macagent.AccountName(slot)
+	if err != nil {
+		return SessionAccount{}, fmt.Errorf("session account: slot %d has no name: %w", slot, err)
+	}
+	return SessionAccount{Name: name, UID: uid, GID: macagent.AccountGID}, nil
 }
 
 // Lookup answers what this process already holds for a session. See the interface comment for why it

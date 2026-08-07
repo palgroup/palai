@@ -167,8 +167,8 @@ test-live-concurrency:
 # rather than passing for a leg it cannot run — a smoke that blurred those two would convert a missing
 # capability into a green line. Extra legs are opt-in:
 #   ARGS=--with-build     also builds the app and shows a screenshot
-#   ARGS=--with-accounts  also proves the per-session uid (needs the sudoers entry from
-#                         scripts/ops/palai-session-account install-sudoers "$$(id -un)")
+#   ARGS=--with-accounts  also proves the per-session uid (needs palai-agentd installed:
+#                         `sudo palai agentd install`, once, on this Mac)
 test-live-ios-demo:
 	@bash scripts/live/ios-demo-smoke $(ARGS)
 
