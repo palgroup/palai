@@ -441,7 +441,7 @@ func imageID(ref string) (string, error) {
 }
 
 // runVisible runs a command with progress routed to stderr, keeping stdout clean for the
-// structured output (`doctor --json`, `response create`) the harness parses.
+// structured output (`doctor --json`, `response get`) the harness parses.
 func runVisible(env []string, name string, args ...string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()

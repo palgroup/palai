@@ -2,9 +2,15 @@
 
 // Package uat's case runner drives the LP-001..015 cases through the packaged local stack
 // and captures a redacted evidence bundle. It is behind the `uat` build tag (Docker- and,
-// for the live cases, credential-bound) so it never rides make verify. It reuses the shipped
-// `palai` CLI as the operator would — no in-process wiring — so the same binary an operator
-// runs is what the proof drives.
+// for the live cases, credential-bound) so it never rides make verify.
+//
+// IT DRIVES THE STACK'S LIFECYCLE THROUGH THE SHIPPED `palai` BINARY — `init`, `local up`,
+// `local reset`, three calls, no in-process wiring — so what stands the stack up is what an operator
+// runs. The RESPONSES it then admits go over `POST /v1/responses` with the stack's own key, which is
+// also what an operator's client does; that half stopped going through `palai response create` on
+// 2026-08-07 when the verb was deleted as a duplicate write surface. The sentence here used to say
+// the CLI was the whole vehicle, and counting the calls is how it stays honest as the component
+// shrinks.
 //
 // Deterministic (fake) cases run on a fake stack: no network, no credential. The live-provider
 // cases (LP-003/LP-004) run on a provider-one stack against the real provider only when

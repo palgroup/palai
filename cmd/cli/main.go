@@ -204,28 +204,33 @@ func supportBundle(args []string) error {
 	return stack.SupportBundle(*out, *tail)
 }
 
+// response has exactly one verb left, and the reason it has ANY is not the CLI's convenience.
+//
+// `create` was deleted on 2026-08-07: `POST /v1/responses` and the panel already admitted the same
+// write, and two truths for one admission is what this component is being taken apart to end. Three
+// suites drove it (tests/uat/dr, tests/uat, tests/e2e/local) and all three now POST directly.
+//
+// `get` STAYS, and not as a leftover. It is the FOURTH CLIENT of the E16 SDK-parity EXIT journey
+// (API-012): apps/control-plane/internal/execution/live/sdk_parity_journey_test.go runs
+// `go run ./cmd/cli response get <id>` beside the TypeScript, Python and Go SDKs, and
+// tests/uat/evidence.go's EqualityClients — {"typescript","python","go","cli"} — is asserted to be
+// covered EXACTLY, with an anti-fabrication gate re-canonicalizing all four outputs. Deleting this
+// verb means either breaking that journey or cutting a shipped exit claim from four clients to
+// three; that is a decision about what replaces the client, and it belongs to the task that removes
+// this whole component, not to a slice that is only clearing duplicate write paths.
 func response(args []string) error {
+	const usage = "usage: palai response get <id>"
 	if len(args) == 0 {
-		return errors.New("usage: palai response create --input <text> | palai response get <id>")
+		return errors.New(usage)
 	}
 	switch args[0] {
-	case "create":
-		fs := flag.NewFlagSet("response create", flag.ContinueOnError)
-		input := fs.String("input", "", "response input text")
-		if err := fs.Parse(args[1:]); err != nil {
-			return err
-		}
-		if *input == "" {
-			return errors.New("response create requires --input <text>")
-		}
-		return stack.CreateResponse(*input)
 	case "get":
 		if len(args) < 2 || args[1] == "" {
-			return errors.New("usage: palai response get <id>")
+			return errors.New(usage)
 		}
 		return stack.GetResponse(args[1])
 	default:
-		return errors.New("usage: palai response create --input <text> | palai response get <id>")
+		return errors.New(usage)
 	}
 }
 
@@ -347,7 +352,7 @@ func usage() {
   palai local reset --confirm     stop and DELETE the data volumes
   palai local doctor [--json]     run the health checks (15: adds disk/queue/callback/runner_identity)
   palai provider add <ref>        store a provider secret (value on stdin)
-  palai response create --input <text>
+  palai response get <id>          retrieve + normalize one response (the SDK-parity fourth client)
 
 operability (E14 T3):
   palai config validate [--env-file <p>] [--overlay <p>] [--json]

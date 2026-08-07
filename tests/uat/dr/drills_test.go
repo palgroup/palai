@@ -143,13 +143,10 @@ func (s *drStack) provisionSecret(name, value string) {
 // returning it — proof the stack is RUN-CAPABLE (dispatch -> runner -> reference-engine -> terminal).
 func (s *drStack) fakeRun(input string) string {
 	s.t.Helper()
-	out := s.cli(nil, "response", "create", "--input", input)
-	var created struct {
-		ID    string `json:"id"`
-		RunID string `json:"run_id"`
-	}
-	if err := json.Unmarshal([]byte(lastJSONLine(out)), &created); err != nil || created.RunID == "" {
-		s.t.Fatalf("decode response create %q: %v", out, err)
+	created := struct{ ID, RunID string }{}
+	created.ID, created.RunID = s.createResponse(input)
+	if created.RunID == "" {
+		s.t.Fatalf("response %s was admitted with no run_id: a run-capability probe needs a run to poll", created.ID)
 	}
 	deadline := time.Now().Add(120 * time.Second)
 	var state string

@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -148,17 +149,46 @@ func (s *uatStack) apiKey() string {
 	return strings.TrimSpace(string(raw))
 }
 
-// runCase drives one case create -> completed and captures its evidence receipt.
-func (s *uatStack) runCase(t *testing.T, c caseSpec) caseReceipt {
-	t.Helper()
-	out := s.run(nil, "response", "create", "--input", c.Input)
+// createResponse admits a response over the stack's own key and returns its id + run id. It POSTs
+// /v1/responses, the mirror of awaitTerminal's GET below, and drove `palai response create` until
+// 2026-08-07 — a second write surface for the same admission, on the component being removed.
+func (s *uatStack) createResponse(input string) (id, runID string) {
+	s.t.Helper()
+	body, err := json.Marshal(map[string]string{"input": input})
+	if err != nil {
+		s.t.Fatalf("marshal response create body: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, s.cfg.BaseURL+"/v1/responses", bytes.NewReader(body))
+	if err != nil {
+		s.t.Fatalf("build POST response: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+s.apiKey())
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "uat-"+strconv.FormatInt(time.Now().UnixNano(), 16))
+	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	if err != nil {
+		s.t.Fatalf("POST /v1/responses: %v", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusAccepted {
+		s.t.Fatalf("POST /v1/responses = %d, want 202: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
 	var created struct {
 		ID    string `json:"id"`
 		RunID string `json:"run_id"`
 	}
-	if err := json.Unmarshal([]byte(lastJSONLine(out)), &created); err != nil {
-		t.Fatalf("%s: decode create output %q: %v", c.ID, out, err)
+	if err := json.Unmarshal(raw, &created); err != nil {
+		s.t.Fatalf("decode response create body %q: %v", raw, err)
 	}
+	return created.ID, created.RunID
+}
+
+// runCase drives one case create -> completed and captures its evidence receipt.
+func (s *uatStack) runCase(t *testing.T, c caseSpec) caseReceipt {
+	t.Helper()
+	created := struct{ ID, RunID string }{}
+	created.ID, created.RunID = s.createResponse(c.Input)
 
 	final := s.awaitTerminal(created.ID, 120*time.Second)
 	if final.Status != c.ExpectStatus {

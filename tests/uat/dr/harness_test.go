@@ -24,10 +24,13 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -274,6 +277,51 @@ func (s *drStack) cliErr(stdin any, args ...string) (string, error) {
 	cmd.Stdout, cmd.Stderr = &out, &out
 	err := cmd.Run()
 	return out.String(), err
+}
+
+// createResponse admits a response over the stack's own bootstrap key and returns its id + run id.
+//
+// THIS ONE DELIBERATELY DOES NOT GO THROUGH THE CLI, and the header above is why it needs saying: the
+// harness reuses the shipped `palai backup`/`restore`/`restore verify` verbatim because those ARE the
+// operator's disaster-recovery tooling and reimplementing them would prove a copy instead of the
+// product. `response create` was never that — it is the run-capability probe, one of two write
+// surfaces for the same admission, and the one on the component being removed. Driving it through
+// the CLI made a DR drill depend on a verb whose deletion has nothing to do with DR.
+func (s *drStack) createResponse(input string) (id, runID string) {
+	s.t.Helper()
+	body, err := json.Marshal(map[string]string{"input": input})
+	if err != nil {
+		s.t.Fatalf("marshal response create body: %v", err)
+	}
+	key, err := os.ReadFile(filepath.Join(s.home, "api-key"))
+	if err != nil {
+		s.t.Fatalf("read api-key: %v", err)
+	}
+	url := fmt.Sprintf("http://127.0.0.1:%d/v1/responses", s.apiPort)
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		s.t.Fatalf("build POST response: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(key)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "dr-"+strconv.FormatInt(time.Now().UnixNano(), 16))
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	if err != nil {
+		s.t.Fatalf("POST /v1/responses: %v", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusAccepted {
+		s.t.Fatalf("POST /v1/responses = %d, want 202: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	var created struct {
+		ID    string `json:"id"`
+		RunID string `json:"run_id"`
+	}
+	if err := json.Unmarshal(raw, &created); err != nil {
+		s.t.Fatalf("decode response create body %q: %v", raw, err)
+	}
+	return created.ID, created.RunID
 }
 
 // docker runs `docker <args...>` with the stack env, progress on stderr, under a deadline.

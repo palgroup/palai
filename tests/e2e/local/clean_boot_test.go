@@ -3,10 +3,14 @@
 package local
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestCleanBootUpDoctorDownRetainsData is the lifecycle proof: `palai init` + `local up`
@@ -91,10 +95,16 @@ func TestProviderSecretIsAbsentFromComposeSurfaces(t *testing.T) {
 	assertMode0600(t, s, "secrets/provider-one")
 }
 
-// TestResponseCreateAdmitsOverBootstrapKey proves the documented command path: `response
-// create` admits over the bootstrap key with no manual SQL (202 + a response id), and the
-// resource is retrievable with the same key. The terminal outcome is out of scope here —
-// the execution path is wired in Task 15.
+// TestResponseCreateAdmitsOverBootstrapKey proves what a freshly `init`ed stack hands its operator:
+// the bootstrap key alone admits a response with no manual SQL (202 + a response id), and the
+// resource is retrievable with that same key. The terminal outcome is out of scope here — the
+// execution path is wired in Task 15.
+//
+// IT SAID "the documented command path" AND DROVE `palai response create`. The claim moved with the
+// surface, not with the verb: what a clean boot owes its operator is a key that works against
+// /v1, and that is now what this asserts end to end. The lifecycle around it — `init`, `local up`,
+// `local down` — is still driven through the CLI in the test above, because there the CLI IS the
+// subject.
 func TestResponseCreateAdmitsOverBootstrapKey(t *testing.T) {
 	s := newStack(t)
 	s.run("init")
@@ -112,19 +122,42 @@ func TestResponseCreateAdmitsOverBootstrapKey(t *testing.T) {
 	}
 }
 
-// createResponse runs `response create` and returns the minted response id. The CLI
-// prints a small JSON line with the id and status.
+// createResponse admits a response over the bootstrap key and returns the minted id. It POSTs
+// /v1/responses directly — the mirror of getResponse below it, reading the same config and the same
+// 0600 key file the operator's own client would.
+//
+// It drove `palai response create` until 2026-08-07. That verb was one of two truths for the same
+// write, and the CLI is the one being removed; a test that reached the API THROUGH it could not tell
+// which of the two it was proving.
 func createResponse(t *testing.T, s *stack, input string) string {
 	t.Helper()
-	out := s.run("response", "create", "--input", input)
+	body, err := json.Marshal(map[string]string{"input": input})
+	if err != nil {
+		t.Fatalf("marshal response create body: %v", err)
+	}
+	c := s.config()
+	req, err := http.NewRequest(http.MethodPost, c.BaseURL+"/v1/responses", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("build POST response: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+s.bootstrapKey())
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "e2e-"+strconv.FormatInt(time.Now().UnixNano(), 16))
+	resp, err := s.apiClient().Do(req)
+	if err != nil {
+		t.Fatalf("POST /v1/responses: %v", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("POST /v1/responses = %d, want 202: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
 	var created struct {
 		ID     string `json:"id"`
 		Status string `json:"status"`
 	}
-	// The command prints the response envelope on its last non-empty line.
-	line := lastJSONLine(out)
-	if err := json.Unmarshal([]byte(line), &created); err != nil {
-		t.Fatalf("decode response create output %q: %v", out, err)
+	if err := json.Unmarshal(raw, &created); err != nil {
+		t.Fatalf("decode response create body %q: %v", raw, err)
 	}
 	return created.ID
 }
