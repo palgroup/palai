@@ -150,6 +150,9 @@ func NewSysadminctlAccounts(allocationRoot string) *SysadminctlAccounts {
 		goos:           runtime.GOOS,
 		ownerOf:        ownerOf,
 		lookupUser:     lookupUserName,
+		usersRoot:      darwinUsersRoot,
+		chown:          os.Chown,
+		sleep:          time.Sleep,
 	}
 }
 

@@ -1101,3 +1101,54 @@ func TestAReusedSlotDoesNotLoseTheRUNNINGSessionsHome(t *testing.T) {
 			"taken the tenant's work away from it (%v)", err)
 	}
 }
+
+// TestTheProductionConstructorLeavesNoFieldNil — THE TESTS SET THESE AND PRODUCTION DID NOT.
+//
+// Measured on a real Mac on 2026-08-08. `usersRoot`, `chown` and `sleep` were added as fields, set by
+// newTestAccounts, and never added to NewSysadminctlAccounts. Every test in this file passed. The
+// daemon answered
+//
+//	creating palai-s01 failed: mkdir palai-s01: read-only file system
+//
+// because the empty usersRoot made the path RELATIVE and launchd starts a daemon at `/`. The nil
+// `sleep` was worse and had not fired yet: the delete path calls it, so destroying a session account
+// would have panicked the root daemon.
+//
+// ‼️ THE SHAPE IS A TEST FIXTURE THAT OWNS ITS CONDITION HIDING A PRODUCTION HOLE. This tree writes
+// down the opposite failure — a test whose green belongs to the harness — and this is its mirror: the
+// harness supplied what production forgot, so the suite proved the LOGIC and said nothing about the
+// WIRING. The only thing that catches it is asking the production constructor itself.
+func TestTheProductionConstructorLeavesNoFieldNil(t *testing.T) {
+	a := NewSysadminctlAccounts("/tmp/allocations")
+
+	if a.usersRoot == "" {
+		t.Error("usersRoot is empty: every home path this daemon writes is RELATIVE, and launchd starts it " +
+			"at / — `mkdir palai-s01: read-only file system`")
+	}
+	if !filepath.IsAbs(a.usersRoot) {
+		t.Errorf("usersRoot = %q, which is not absolute", a.usersRoot)
+	}
+	if a.chown == nil {
+		t.Error("chown is nil: creating an account would panic the root daemon before it gave the home away")
+	}
+	if a.sleep == nil {
+		t.Error("sleep is nil: deleting an account would panic the root daemon after it signalled the " +
+			"account's processes")
+	}
+	for name, f := range map[string]any{
+		"run": a.run, "spawn": a.spawn, "hostUUID": a.hostUUID, "now": a.now,
+		"ownerOf": a.ownerOf, "lookupUser": a.lookupUser,
+	} {
+		if f == nil {
+			t.Errorf("%s is nil in the production constructor", name)
+		}
+	}
+	for name, v := range map[string]string{
+		"workerPath": a.workerPath, "foldersRoot": a.foldersRoot,
+		"messagesRoot": a.messagesRoot, "goos": a.goos, "allocationRoot": a.allocationRoot,
+	} {
+		if v == "" {
+			t.Errorf("%s is empty in the production constructor", name)
+		}
+	}
+}
