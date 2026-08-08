@@ -152,10 +152,16 @@ export const AGENT_INSTRUCTIONS =
   "change, a build, a test, or a fact that can only be obtained by looking. When you are unsure what " +
   "they want, ASK rather than explore.";
 
+// ‼️ IT IS OVERRIDABLE, AND THAT IS ABOUT DEPLOYMENTS RATHER THAN PREFERENCE. A revision pins a model
+// and the provider either has it or does not: a stack whose PALAI_MODEL_PROVIDER is the OpenAI adapter
+// answers `model_not_found` (HTTP 404) for a Claude id, and the run fails at step 1 with an error that
+// names the model and not the mismatch. Measured on this stack on 2026-08-08. So the default is what the
+// product wants and PALAI_AGENT_MODEL is what a deployment that routes elsewhere sets.
+//
 // The model the revision pins. MEASURED on the live stack: a turn with no pinned model reported
 // `model: "claude-sonnet-5"`, so this pins what the deployment was already choosing rather than
 // moving it. `model_dispatch.go:620` reads `pinned.Model`, so this is the field that decides.
-const AGENT_MODEL = "claude-sonnet-5";
+const AGENT_MODEL = process.env.PALAI_AGENT_MODEL ?? "claude-sonnet-5";
 
 export interface ResolvedAgent {
   id: string;
@@ -199,7 +205,7 @@ async function resolve(): Promise<ResolvedAgent> {
   //    rather than on mere existence is what makes an edit to AGENT_INSTRUCTIONS take effect: change
   //    the constant, and the next cold start publishes a new revision instead of quietly running the
   //    old prompt forever. Revisions are immutable and numbered, so the previous one stays readable.
-  const published = await findPublishedRevision(agentId, AGENT_INSTRUCTIONS);
+  const published = await findPublishedRevision(agentId, AGENT_INSTRUCTIONS, AGENT_MODEL);
   if (published !== null) {
     return { id: agentId, name: AGENT_NAME, revisionId: published, provisioned };
   }
@@ -219,13 +225,23 @@ async function findProfileByName(name: string): Promise<string | null> {
   return row === undefined ? null : String(row.id);
 }
 
-async function findPublishedRevision(agentId: string, instructions: string): Promise<string | null> {
+// ‼️ THE MODEL IS PART OF THE MATCH, AND LEAVING IT OUT MADE PALAI_AGENT_MODEL DO NOTHING. Matching on
+// the instructions alone meant a revision published with one model was reused forever: a deployment that
+// set the variable got the old pin, every run failed with `model_not_found`, and the setting looked
+// broken rather than ignored. Measured on this stack on 2026-08-08 — the revision id did not move.
+async function findPublishedRevision(agentId: string, instructions: string, model: string): Promise<string | null> {
   const page = await readJSON<{ data?: Record<string, unknown>[] }>(
     `/v1/agents/${encodeURIComponent(agentId)}/revisions?limit=100`,
   );
   const rows = Array.isArray(page.data) ? page.data : [];
   const match = rows.find(
-    (r) => r.status === "published" && typeof r.instructions === "string" && r.instructions === instructions,
+    (r) =>
+      r.status === "published" &&
+      typeof r.instructions === "string" &&
+      r.instructions === instructions &&
+      // A revision that reports no model is one this build did not publish; treat it as a mismatch
+      // rather than a wildcard, so the next cold start replaces it with one whose pin is known.
+      r.model === model,
   );
   return match === undefined ? null : String(match.id);
 }

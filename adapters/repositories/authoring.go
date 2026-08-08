@@ -111,12 +111,31 @@ func DiffWorkingTree(ctx context.Context, repoDir, base string, maxBytes int) (W
 		return WorkingChangeset{}, fmt.Errorf("diff scratch: %w", err)
 	}
 	defer os.RemoveAll(scratch)
-	// A non-existent index path is treated as an empty index; staging into it re-reads the worktree
-	// without disturbing the repo's real index (which a later commit/push depends on). The scratch dir
-	// is OUTSIDE the repo, or `add -A` would stage the index file it is being written into.
-	// ponytail: `add -A` into an empty scratch index re-hashes the worktree — bounded and fine for a
-	// coding workspace; a base-seeded index (read-tree) is the upgrade path if a huge tree needs it.
+	// The scratch dir is OUTSIDE the repo, or `add -A` would stage the index file it is being written
+	// into. Staging here leaves the repo's real index alone, which a later commit/push depends on.
 	idxEnv := []string{"GIT_INDEX_FILE=" + filepath.Join(scratch, "index")}
+
+	// ‼️ THE INDEX IS SEEDED FROM THE BASE TREE, AND AN EMPTY ONE REPORTED DELETIONS THAT NEVER HAPPENED.
+	// This line's absence was measured on a real repository on 2026-08-08: a run that created ONE file
+	// produced a changeset of "65 deleted, 1 added", and `git status` in that same workspace, against
+	// that same base commit, reported nothing but the one new file.
+	//
+	// The cause is that the two sides of the comparison do not see the same tree. `add -A` RESPECTS
+	// .gitignore; a base commit does not. So every path that is TRACKED in base and IGNORED today —
+	// `.claude/` in that repository, and the pattern is everywhere: a committed .vscode, a lockfile
+	// added before the rule, generated assets somebody checked in — is never staged, and
+	// `diff --cached base` can only read that as a deletion. An empty submodule directory (a gitlink the
+	// shallow clone left empty) reads the same way.
+	//
+	// read-tree puts base's own entries in first, so those paths are already present and only a REAL
+	// change moves them. It does not re-introduce the opposite error: `add -A` still skips files that
+	// are ignored AND untracked, so a Swift build's DerivedData does not land in the patch.
+	//
+	// WHAT IT COST IS THE WHOLE PANEL. The diff is what a human approves, and it was telling them the
+	// agent had destroyed sixty-four files it never touched.
+	if _, err := gitInEnv(ctx, repoDir, idxEnv, "read-tree", base); err != nil {
+		return WorkingChangeset{}, err
+	}
 	if _, err := gitInEnv(ctx, repoDir, idxEnv, "add", "-A"); err != nil {
 		return WorkingChangeset{}, err
 	}
