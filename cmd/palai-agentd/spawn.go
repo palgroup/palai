@@ -182,10 +182,22 @@ func (a *SysadminctlAccounts) Spawn(ctx context.Context, slot int) (string, int,
 	if err := os.MkdirAll(slotDir, slotRootMode); err != nil {
 		return "", 0, macagent.Errorf(macagent.ClassInternal, "create %s: %v", slotDir, err)
 	}
+	// ‼️ THE OWNER IS THE CONTROL PLANE AND NOT root, WHICH IS THE HALF THIS GOT WRONG FIRST. A directory
+	// MkdirAll'd by this daemon belongs to uid 0, and the control plane then cannot write in it — the
+	// runner's next `mkdir <slot>/alloc_…` answers `permission denied` and the session fails at workspace
+	// planning. Measured on a real Mac on 2026-08-08: `drwxrwx--- 0 801 /Users/Shared/palai-work/slot-01`.
+	//
+	// Who the control plane IS comes from the allocation root's owner, the same derivation
+	// joinControlPlane uses and the only statement about its identity that does not arrive on a wire.
+	cpUID, err := a.ownerOf(a.allocationRoot)
+	if err != nil {
+		return "", 0, macagent.Errorf(macagent.ClassInternal,
+			"reading who owns %s, so this daemon cannot tell which user the slot directory belongs to: %v", a.allocationRoot, err)
+	}
 	// Through the same seam Create's handover uses: only uid 0 may do this, so it is the one filesystem
 	// call here a test cannot make.
-	if err := a.chown(slotDir, -1, gid); err != nil {
-		return "", 0, macagent.Errorf(macagent.ClassInternal, "give %s to gid %d: %v", slotDir, gid, err)
+	if err := a.chown(slotDir, cpUID, gid); err != nil {
+		return "", 0, macagent.Errorf(macagent.ClassInternal, "give %s to uid %d gid %d: %v", slotDir, cpUID, gid, err)
 	}
 	if err := os.Chmod(slotDir, slotRootMode); err != nil {
 		return "", 0, macagent.Errorf(macagent.ClassInternal, "set the mode of %s: %v", slotDir, err)

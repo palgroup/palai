@@ -116,8 +116,12 @@ func newTestAccounts(t *testing.T, rec *recordingRun) *SysadminctlAccounts {
 		// The settle a delete spends after signalling the account's processes. Substituted so the shipped
 		// value is driven without being waited out — never shortened in production, where a signal that
 		// has not landed is the race the settle exists for.
-		sleep:     func(time.Duration) {},
-		usersRoot: t.TempDir(),
+		sleep: func(time.Duration) {},
+		// The control plane's uid, derived in production from the allocation root's owner. A nil hook
+		// panics the daemon at spawn, which is what an unset field looks like here.
+		ownerOf:    func(string) (int, error) { return 501, nil },
+		lookupUser: func(int) (string, error) { return "operator", nil },
+		usersRoot:  t.TempDir(),
 		// Only uid 0 may give a file to another uid. Recorded rather than performed, so the test can
 		// assert WHAT was handed to WHOM without the suite needing root.
 		chown: func(path string, uid, gid int) error {

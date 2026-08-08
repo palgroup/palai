@@ -428,6 +428,7 @@ func TestSpawnPreparesTheSlotDirectoryItStartsTheWorkerIn(t *testing.T) {
 	rec := ourRecord(slot)
 	accounts := newTestAccounts(t, rec)
 	accounts.allocationRoot = walkableRoot(t)
+	accounts.ownerOf = func(string) (int, error) { return 501, nil }
 
 	var gave []string
 	accounts.chown = func(path string, uid, gid int) error {
@@ -455,7 +456,7 @@ func TestSpawnPreparesTheSlotDirectoryItStartsTheWorkerIn(t *testing.T) {
 		t.Errorf("%s is mode %04o, want %04o — the group needs w to bind the worker's socket, and the child "+
 			"needs x to enter its own working directory", slotDir, got, slotRootMode)
 	}
-	want := SlotDirName(slot) + " -> uid:-1 gid:807"
+	want := SlotDirName(slot) + " -> uid:501 gid:807"
 	found := false
 	for _, g := range gave {
 		if g == want {
