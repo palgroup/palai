@@ -218,7 +218,13 @@ func TestTheDeviceBinaryAnswersVersionInsteadOfBecomingAnAgent(t *testing.T) {
 	// package does not own and a contract that holds for one spelling is not a contract.
 	for _, flag := range []string{"--version", "-version", "version"} {
 		t.Run(flag, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			// ‼️ THE BOUND IS GENEROUS ON PURPOSE, AND 15s PRODUCED A FALSE RED. The property this test
+			// owns is "`--version` RETURNS rather than becoming an agent", and the failure it guards
+			// never returns at all — so any finite deadline proves it. A tight one instead measures the
+			// machine: on 2026-08-08 this failed inside `make verify` at a fifteen-minute load average of
+			// 47, and passed in 2.6s on the same commit when run alone. The red said "it fell through to
+			// the agent", which is a frightening and completely wrong diagnosis.
+			ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 			defer cancel()
 			out, err := exec.CommandContext(ctx, bin, flag).CombinedOutput()
 			if ctx.Err() != nil {
