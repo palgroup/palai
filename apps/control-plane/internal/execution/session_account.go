@@ -168,9 +168,15 @@ func NewDaemonSessionAccounts(socketPath string) *SlotAccounts {
 		held:  map[int]bool{},
 		log:   log.Printf,
 		run: func(ctx context.Context, verb string, slot int) error {
-			// The two verbs this type spends are the two the daemon admits for an account. A third
-			// spelling would be a request the daemon refuses on shape, which is the right answer but a
-			// late one — so the mapping is total and explicit here.
+			// ‼️ THE MAPPING IS TOTAL, AND IT SAID SO WHILE BEING INCOMPLETE. `spawn` was added to Acquire
+			// and never added here, so every session logged "slot 01 has an account but no worker" and
+			// every shell command ran as the control plane's own uid — measured on a real Mac on
+			// 2026-08-08, with the live chain reporting `ran as salih`. The daemon's refusal was correct
+			// and useless: it names a verb the caller never sent it.
+			//
+			// TestEveryVerbThisTypeSPENDSIsOneTheMappingKNOWS is what makes the claim checkable, because
+			// the failure mode is not a compile error and not a refusal an operator sees — it is a
+			// boundary that silently is not there.
 			var v macagent.Verb
 			switch verb {
 			case "create":
@@ -179,6 +185,8 @@ func NewDaemonSessionAccounts(socketPath string) *SlotAccounts {
 				v = macagent.VerbDelete
 			case "adopt":
 				v = macagent.VerbAdopt
+			case "spawn":
+				v = macagent.VerbSpawn
 			default:
 				return fmt.Errorf("session account: %q is not a verb this daemon is asked for", verb)
 			}

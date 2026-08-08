@@ -1024,3 +1024,80 @@ func TestAPreviousTenantsHomeIsMovedAsideAndNeverInherited(t *testing.T) {
 			"one thing TCC will not let this daemon do reliably")
 	}
 }
+
+// TestAnExistingAccountWhoseHomeIsGONEGetsItBack — A RECORD THAT OUTLIVED ITS DIRECTORY.
+//
+// Measured on this Mac on 2026-08-08. palai-s01's record survived while its home did not, so Create
+// took its idempotent branch, aligned the group, and returned ClassExists — which the caller treats as
+// the outcome it wanted. The spawn that followed answered
+//
+//	fork/exec /usr/local/libexec/palai-session-worker: no such file or directory
+//
+// naming a file that was present, executable and root-owned: fork/exec reports ENOENT for a missing
+// WORKING DIRECTORY too, and the worker's is the account's home. Every session then ran its commands as
+// the control plane's own uid, and every layer above reported success.
+func TestAnExistingAccountWhoseHomeIsGONEGetsItBack(t *testing.T) {
+	rec := &recordingRun{answers: map[string]string{
+		"dscl . -read /Users/palai-s07 UniqueID":            "UniqueID: 707",
+		"dscl . -read /Users/palai-s07 PrimaryGroupID":      "PrimaryGroupID: 807",
+		"dscl . -read /Groups/palai-s07-grp PrimaryGroupID": "PrimaryGroupID: 807",
+	}}
+	a := newTestAccounts(t, rec)
+	a.allocationRoot = t.TempDir()
+	a.ownerOf = func(string) (int, error) { return 501, nil }
+	a.lookupUser = func(int) (string, error) { return "operator", nil }
+
+	// The record is there and the directory is not — nothing is seeded under usersRoot.
+	_, _, err := a.Create(context.Background(), 7)
+	if err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("Create returned %v, want the ClassExists answer for a record that is there", err)
+	}
+
+	diskHome := filepath.Join(a.usersRoot, "palai-s07")
+	fi, serr := os.Stat(diskHome)
+	if serr != nil || !fi.IsDir() {
+		t.Fatalf("%s was not restored: the session worker's working directory does not exist, so fork/exec "+
+			"answers ENOENT naming the BINARY and the machine reads as a broken install", diskHome)
+	}
+	if _, serr := os.Stat(filepath.Join(diskHome, "tmp")); serr != nil {
+		t.Errorf("no TMPDIR under the restored %s", diskHome)
+	}
+	if got := fi.Mode().Perm(); got != 0o710 {
+		t.Errorf("%s is mode %04o, want 0710 — the control plane must reach the worker's socket", diskHome, got)
+	}
+}
+
+// TestAReusedSlotDoesNotLoseTheRUNNINGSessionsHome is the other side of the same branch, and the reason
+// ensureHome takes a flag at all. The exists path is the SAME account still holding the slot — a control
+// plane that restarted mid-session — so renaming its home there would take the running session's own
+// files away from it while it works.
+func TestAReusedSlotDoesNotLoseTheRUNNINGSessionsHome(t *testing.T) {
+	rec := &recordingRun{answers: map[string]string{
+		"dscl . -read /Users/palai-s07 UniqueID":            "UniqueID: 707",
+		"dscl . -read /Users/palai-s07 PrimaryGroupID":      "PrimaryGroupID: 807",
+		"dscl . -read /Groups/palai-s07-grp PrimaryGroupID": "PrimaryGroupID: 807",
+	}}
+	a := newTestAccounts(t, rec)
+	a.allocationRoot = t.TempDir()
+	a.ownerOf = func(string) (int, error) { return 501, nil }
+	a.lookupUser = func(int) (string, error) { return "operator", nil }
+
+	diskHome := filepath.Join(a.usersRoot, "palai-s07")
+	if err := os.MkdirAll(diskHome, 0o710); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	const inFlight = "the running session's own file"
+	if err := os.WriteFile(filepath.Join(diskHome, "work"), []byte(inFlight), 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if _, _, err := a.Create(context.Background(), 7); err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("Create returned %v, want ClassExists", err)
+	}
+
+	body, err := os.ReadFile(filepath.Join(diskHome, "work"))
+	if err != nil || string(body) != inFlight {
+		t.Fatalf("the running session's file is gone: a control plane that restarted mid-session would have "+
+			"taken the tenant's work away from it (%v)", err)
+	}
+}

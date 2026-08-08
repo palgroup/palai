@@ -368,6 +368,81 @@ func (a *SysadminctlAccounts) readAttr(ctx context.Context, path, attr string) (
 	return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(out), attr+":")), nil
 }
 
+// ensureHome leaves slot N's home in the state a fresh create would: a directory the account owns, a
+// TMPDIR inside it, and mode 0710.
+//
+// ‼️ IT RUNS ON THE "ALREADY EXISTS" PATH TOO, AND NOT RUNNING THERE COST THE WHOLE BOUNDARY. Measured
+// on this Mac on 2026-08-08: palai-s01's record survived while its home did not, so create took its
+// idempotent branch, aligned the group, and reported ClassExists — which the caller treats as success.
+// The spawn that followed answered
+//
+//	fork/exec /usr/local/libexec/palai-session-worker: no such file or directory
+//
+// naming a file that was present, executable and root-owned. fork/exec reports ENOENT for a missing
+// WORKING DIRECTORY too, and the worker's is the account's home. Every session then ran its commands as
+// the control plane's own uid with every layer above reporting success; the live chain said `ran as
+// salih` while a session account sat there unused.
+//
+// orphanStale is the one thing the two paths do differently. A fresh create must never inherit a
+// directory left by a previous tenant of the same slot; the exists path is the SAME account still
+// holding the slot — a control plane that restarted mid-session — and renaming its home there would
+// take the running session's own files away from it.
+func (a *SysadminctlAccounts) ensureHome(name string, uid, gid int, orphanStale bool) error {
+	// ‼️ THE HOME IS MADE HERE AND `createhomedir` IS NOT USED, AND THE REASON WAS MEASURED ON THIS MAC
+	// ON 2026-08-08. createhomedir populates from the user template — Music, Pictures, Desktop,
+	// Library/Containers — and macOS puts those exact paths behind TCC. `sudo rm -rf /Users/palai-s05`
+	// answered `Operation not permitted` on eight of them AS ROOT, and the home survived. An account
+	// whose home cannot be removed is an account that cannot be DESTROYED, which is the entire idle half
+	// of this lifecycle: created when a session starts, destroyed when it goes quiet.
+	//
+	// A SESSION ACCOUNT NEEDS NONE OF THAT TEMPLATE. It never logs in, never opens a GUI app and never
+	// has a Desktop. It needs a directory it owns and a TMPDIR, so those are the two things made — and
+	// what is never created is never protected.
+	diskHome := filepath.Join(a.usersRoot, name)
+
+	// ‼️ A HOME THAT IS ALREADY THERE IS MOVED ASIDE AND NEVER INHERITED. Slots are reused and a
+	// directory is not: one left by a crashed destroy, by a machine that outlived a scheme change, or by
+	// the template homes this daemon used to create and could not remove, would arrive owned by the NEW
+	// account with the OLD session's files in it. That is a cross-tenant read with every layer reporting
+	// success, which is the one outcome per-session accounts exist to prevent.
+	//
+	// Renamed rather than deleted, because deleting is exactly what TCC refuses: the rename is a write
+	// to /Users, which root may always do, and it leaves the residue where an operator can see it.
+	if _, err := os.Lstat(diskHome); err == nil && orphanStale {
+		orphan := fmt.Sprintf("%s.orphaned-%d", diskHome, a.now().UTC().Unix())
+		if err := os.Rename(diskHome, orphan); err != nil {
+			return macagent.Errorf(macagent.ClassInternal,
+				"%s already exists and could not be moved aside to %s, so this slot cannot be given a clean home: %v",
+				diskHome, orphan, err)
+		}
+	}
+	if err := os.MkdirAll(diskHome, 0o710); err != nil {
+		return macagent.Errorf(macagent.ClassInternal, "creating %s failed: %v", diskHome, err)
+	}
+	if err := a.chown(diskHome, uid, gid); err != nil {
+		return macagent.Errorf(macagent.ClassInternal, "giving %s to %s: %v", diskHome, name, err)
+	}
+	// TMPDIR, because the session worker's environment names $HOME/tmp and a TMPDIR that does not exist
+	// is a toolchain that fails somewhere far from here.
+	tmp := filepath.Join(diskHome, "tmp")
+	if err := os.MkdirAll(tmp, 0o700); err != nil {
+		return macagent.Errorf(macagent.ClassInternal, "creating %s failed: %v", tmp, err)
+	}
+	if err := a.chown(tmp, uid, gid); err != nil {
+		return macagent.Errorf(macagent.ClassInternal, "giving %s to %s: %v", tmp, name, err)
+	}
+	// ‼️ x WITHOUT r, AND THE ONE BIT IS LOAD-BEARING. The group is this slot's own and its other member
+	// is the control plane, which has to reach exactly ONE path inside: the session worker's socket
+	// (macagent.WorkerSocket). 0700 makes that socket unreachable, which is a machine that mints
+	// accounts and cannot run a single command as one. x lets it traverse to a path it already knows; no
+	// r means it cannot list the home, and no other tenant is in the group at all. MkdirAll applies the
+	// process umask, so the mode is SET rather than assumed.
+	if err := os.Chmod(diskHome, 0o710); err != nil {
+		return macagent.Errorf(macagent.ClassInternal, "tightening %s to 0710 failed: %v", diskHome, err)
+	}
+	return nil
+}
+
 // alignPrimaryGroup makes an EXISTING account's primary group the one this daemon allocates for its
 // slot, and it is a repair rather than a check because the alternative is a refusal a session cannot act
 // on.
@@ -428,6 +503,19 @@ func (a *SysadminctlAccounts) Create(ctx context.Context, slot int) (string, str
 			return "", "", err
 		}
 		if err := a.alignPrimaryGroup(ctx, name, slot); err != nil {
+			return "", "", err
+		}
+		// AND THE HOME, which the group alignment above says nothing about. See ensureHome: a record that
+		// outlived its directory is what made every session's commands run as the control plane's uid.
+		euid, herr := macagent.AccountUID(slot)
+		if herr != nil {
+			return "", "", herr
+		}
+		egid, herr := macagent.SlotGID(slot)
+		if herr != nil {
+			return "", "", herr
+		}
+		if err := a.ensureHome(name, euid, egid, false); err != nil {
 			return "", "", err
 		}
 		return "", "", macagent.Errorf(macagent.ClassExists, "%s already exists (uid %d)", name, rec.uid)
@@ -498,57 +586,8 @@ func (a *SysadminctlAccounts) Create(ctx context.Context, slot int) (string, str
 		return "", "", macagent.Errorf(macagent.ClassInternal, "marking %s failed, so it could never be deleted by this daemon: %v: %s", name, err, strings.TrimSpace(out))
 	}
 
-	// ‼️ THE HOME IS MADE HERE AND `createhomedir` IS NOT USED, AND THE REASON WAS MEASURED ON THIS MAC
-	// ON 2026-08-08. createhomedir populates from the user template — Music, Pictures, Desktop,
-	// Library/Containers — and macOS puts those exact paths behind TCC. `sudo rm -rf /Users/palai-s05`
-	// answered `Operation not permitted` on eight of them AS ROOT, and the home survived. An account
-	// whose home cannot be removed is an account that cannot be DESTROYED, which is the entire idle half
-	// of this lifecycle: created when a session starts, destroyed when it goes quiet.
-	//
-	// A SESSION ACCOUNT NEEDS NONE OF THAT TEMPLATE. It never logs in, never opens a GUI app and never
-	// has a Desktop. It needs a directory it owns and a TMPDIR, so those are the two things made — and
-	// what is never created is never protected.
-	diskHome := filepath.Join(a.usersRoot, name)
-
-	// ‼️ A HOME THAT IS ALREADY THERE IS MOVED ASIDE AND NEVER INHERITED. Slots are reused and a
-	// directory is not: one left by a crashed destroy, by a machine that outlived a scheme change, or by
-	// the template homes this daemon used to create and could not remove, would arrive owned by the NEW
-	// account with the OLD session's files in it. That is a cross-tenant read with every layer reporting
-	// success, which is the one outcome per-session accounts exist to prevent.
-	//
-	// Renamed rather than deleted, because deleting is exactly what TCC refuses: the rename is a write
-	// to /Users, which root may always do, and it leaves the residue where an operator can see it.
-	if _, err := os.Lstat(diskHome); err == nil {
-		orphan := fmt.Sprintf("%s.orphaned-%d", diskHome, a.now().UTC().Unix())
-		if err := os.Rename(diskHome, orphan); err != nil {
-			return "", "", macagent.Errorf(macagent.ClassInternal,
-				"%s already exists and could not be moved aside to %s, so this slot cannot be given a clean home: %v",
-				diskHome, orphan, err)
-		}
-	}
-	if err := os.MkdirAll(diskHome, 0o710); err != nil {
-		return "", "", macagent.Errorf(macagent.ClassInternal, "creating %s failed: %v", diskHome, err)
-	}
-	if err := a.chown(diskHome, uid, gid); err != nil {
-		return "", "", macagent.Errorf(macagent.ClassInternal, "giving %s to %s: %v", diskHome, name, err)
-	}
-	// TMPDIR, because the session worker's environment names $HOME/tmp and a TMPDIR that does not exist
-	// is a toolchain that fails somewhere far from here.
-	tmp := filepath.Join(diskHome, "tmp")
-	if err := os.MkdirAll(tmp, 0o700); err != nil {
-		return "", "", macagent.Errorf(macagent.ClassInternal, "creating %s failed: %v", tmp, err)
-	}
-	if err := a.chown(tmp, uid, gid); err != nil {
-		return "", "", macagent.Errorf(macagent.ClassInternal, "giving %s to %s: %v", tmp, name, err)
-	}
-	// ‼️ x WITHOUT r, AND THE ONE BIT IS LOAD-BEARING. The group is this slot's own and its other member
-	// is the control plane, which has to reach exactly ONE path inside: the session worker's socket
-	// (macagent.WorkerSocket). 0700 makes that socket unreachable, which is a machine that mints
-	// accounts and cannot run a single command as one. x lets it traverse to a path it already knows; no
-	// r means it cannot list the home, and no other tenant is in the group at all. MkdirAll applies the
-	// process umask, so the mode is SET rather than assumed.
-	if err := os.Chmod(diskHome, 0o710); err != nil {
-		return "", "", macagent.Errorf(macagent.ClassInternal, "tightening %s to 0710 failed: %v", diskHome, err)
+	if err := a.ensureHome(name, uid, gid, true); err != nil {
+		return "", "", err
 	}
 	return name, home, nil
 }

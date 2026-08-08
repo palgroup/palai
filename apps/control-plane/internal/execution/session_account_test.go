@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"syscall"
 	"testing"
 
@@ -319,4 +320,45 @@ func countVerb(calls []string, verb string) int {
 		}
 	}
 	return n
+}
+
+// TestEveryVerbThisTypeSPENDSIsOneTheMappingKNOWS — THE MAPPING SAID IT WAS TOTAL WHILE BEING
+// INCOMPLETE, AND THE COST WAS THE WHOLE BOUNDARY.
+//
+// `spawn` was added to Acquire on 2026-08-08 and never added to the verb switch in
+// NewDaemonSessionAccounts. Nothing failed to compile. The daemon's refusal was correct and useless —
+// it named a verb the caller never sent it — and the log line that carried it said "slot 01 has an
+// account but no worker", which reads as a machine missing an install. Every shell command then ran as
+// the control plane's own uid, and the live chain reported `ran as salih` while every layer above it
+// reported success.
+//
+// So this reads the SOURCE of the two halves rather than driving them: the verbs Acquire/Release/Adopt
+// hand to a.run are string literals, and the switch that translates them is a list of string literals,
+// and the only way they can disagree is if one grew without the other.
+func TestEveryVerbThisTypeSPENDSIsOneTheMappingKNOWS(t *testing.T) {
+	body, err := os.ReadFile("session_account.go")
+	if err != nil {
+		t.Fatalf("read the source: %v", err)
+	}
+	src := string(body)
+
+	spends := regexp.MustCompile(`a\.run\(ctx, "([a-z]+)"`).FindAllStringSubmatch(src, -1)
+	if len(spends) == 0 {
+		t.Fatal("no `a.run(ctx, \"...\"` call was found: this guard is reading a file that has changed " +
+			"shape, and everything it concludes is about code it does not understand")
+	}
+	knows := map[string]bool{}
+	for _, m := range regexp.MustCompile(`case "([a-z]+)":\s*\n\s*v = macagent\.Verb`).FindAllStringSubmatch(src, -1) {
+		knows[m[1]] = true
+	}
+	if len(knows) == 0 {
+		t.Fatal("the verb switch did not parse; the anchor is gone and this guard is vacuous")
+	}
+	for _, m := range spends {
+		if !knows[m[1]] {
+			t.Errorf("this type spends %q and the mapping does not know it: the daemon answers "+
+				"%q is not a verb this daemon is asked for, which names a verb the caller never sent — and the "+
+				"boundary that verb exists for silently is not there", m[1], m[1])
+		}
+	}
 }
