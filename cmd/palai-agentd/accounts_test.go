@@ -51,6 +51,16 @@ func (r *recordingRun) run(_ context.Context, name string, args ...string) (stri
 	if r.fail[key] {
 		return "boom", os.ErrPermission
 	}
+	// Either tool removes the record, because in production either one can — see
+	// TestDeleteFALLSBACKWhenTheFirstToolRefuses for the night both were measured failing in opposite
+	// ways. A fake that only modelled one would make the fallback path look broken.
+	if name == "sysadminctl" && len(args) >= 2 && args[0] == "-deleteUser" {
+		if r.gone == nil {
+			r.gone = map[string]bool{}
+		}
+		r.gone[args[1]] = true
+		delete(r.made, args[1])
+	}
 	if name == "dscl" && len(args) >= 3 && args[1] == "-delete" && strings.HasPrefix(args[2], "/Users/") {
 		if r.gone == nil {
 			r.gone = map[string]bool{}
@@ -1150,5 +1160,58 @@ func TestTheProductionConstructorLeavesNoFieldNil(t *testing.T) {
 		if v == "" {
 			t.Errorf("%s is empty in the production constructor", name)
 		}
+	}
+}
+
+// TestDeleteFALLSBACKWhenTheFirstToolRefuses — BOTH TOOLS HAVE BEEN MEASURED FAILING, IN OPPOSITE WAYS,
+// ON THIS MACHINE, ON THE SAME NIGHT.
+//
+// `sysadminctl -deleteUser` exited 0 and left the record standing. `dscl . -delete` answered
+// `eDSPermissionError (-14120)` as ROOT — the local node refusing an operation root is otherwise
+// entitled to. Neither is trustworthy alone, and neither is trustworthy about ITSELF, so the authority
+// is the read-back: a refusal is reported only when the record survived both.
+func TestDeleteFALLSBACKWhenTheFirstToolRefuses(t *testing.T) {
+	rec := deleteScript(goodMarker())
+	rec.answers["pkill -TERM -u 707"] = ""
+	rec.answers["pkill -KILL -u 707"] = ""
+	// dscl refuses the way the local node did.
+	rec.fail = map[string]bool{"dscl . -delete /Users/palai-s07": true}
+	rec.answers["sysadminctl -deleteUser palai-s07"] = ""
+	a := newTestAccounts(t, rec)
+
+	if _, _, err := a.Delete(context.Background(), 7); err != nil {
+		t.Fatalf("Delete gave up although the second tool could have done it: %v", err)
+	}
+	found := false
+	for _, call := range rec.calls {
+		if strings.Join(call, " ") == "sysadminctl -deleteUser palai-s07" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("dscl refused and nothing else was tried: the slot is lost for the machine's lifetime, and " +
+			"the account it could not delete keeps its uid")
+	}
+}
+
+// TestDeleteREFUSESWhenBothToolsFail is the other side: a record that survived both is the one state an
+// operator has to act on, and reporting success there would leave a live uid nobody knows about.
+func TestDeleteREFUSESWhenBothToolsFail(t *testing.T) {
+	rec := deleteScript(goodMarker())
+	rec.answers["pkill -TERM -u 707"] = ""
+	rec.answers["pkill -KILL -u 707"] = ""
+	rec.fail = map[string]bool{
+		"dscl . -delete /Users/palai-s07":   true,
+		"sysadminctl -deleteUser palai-s07": true,
+	}
+	a := newTestAccounts(t, rec)
+
+	_, _, err := a.Delete(context.Background(), 7)
+	if err == nil {
+		t.Fatal("a record neither tool could remove was reported as deleted; the account keeps its uid and " +
+			"the slot is handed to the next session")
+	}
+	if !strings.Contains(err.Error(), "dscl") || !strings.Contains(err.Error(), "sysadminctl") {
+		t.Errorf("the refusal is %q, want one naming BOTH tools and what each said", err)
 	}
 }

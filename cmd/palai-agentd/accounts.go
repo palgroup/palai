@@ -673,8 +673,21 @@ func (a *SysadminctlAccounts) Delete(ctx context.Context, slot int) (string, str
 		a.sleep(accountReapSettle)
 	}
 
-	if out, err := a.run(ctx, "dscl", ".", "-delete", "/Users/"+name); err != nil {
-		return "", "", macagent.Errorf(macagent.ClassInternal, "deleting the record for %s failed: %v: %s", name, err, strings.TrimSpace(out))
+	// ‼️ BOTH TOOLS, BECAUSE BOTH HAVE BEEN MEASURED FAILING — IN OPPOSITE WAYS, ON THIS MACHINE, ON THE
+	// SAME NIGHT. `sysadminctl -deleteUser` exited 0 and left the record standing. `dscl . -delete`
+	// answered `eDSPermissionError (-14120)` as ROOT, which is the local node refusing an operation root
+	// is otherwise entitled to. Neither is trustworthy alone and neither is trustworthy about ITSELF.
+	//
+	// THE AUTHORITY IS THE READ-BACK BELOW, and that is the whole design: try the deterministic one,
+	// then the platform one, then ask directory services what is actually there. A refusal is reported
+	// only when the record survived BOTH — which is the one state an operator has to act on.
+	dsclOut, dsclErr := a.run(ctx, "dscl", ".", "-delete", "/Users/"+name)
+	if dsclErr != nil {
+		if out, err := a.run(ctx, "sysadminctl", "-deleteUser", name); err != nil {
+			return "", "", macagent.Errorf(macagent.ClassInternal,
+				"deleting the record for %s failed with both tools: dscl said %v (%s); sysadminctl said %v (%s)",
+				name, dsclErr, strings.TrimSpace(dsclOut), err, strings.TrimSpace(out))
+		}
 	}
 	if err := os.RemoveAll(filepath.Join(a.usersRoot, name)); err != nil {
 		return "", "", macagent.Errorf(macagent.ClassInternal, "the record for %s is gone but %s could not be removed: %v", name, home, err)
