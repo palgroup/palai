@@ -1,9 +1,9 @@
 "use client";
 
-import { Loader2, Send, Sparkles, Square } from "lucide-react";
+import { Image as ImageIcon, Loader2, Send, Sparkles, Square } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { type AIStreamEvent, streamGenerate } from "@/components/ai-chat/api";
+import { type AIStreamEvent, streamGenerate, uploadImage } from "@/components/ai-chat/api";
 import { MessageResponse } from "@/components/ai-elements/message";
 import { MediaPart, type MediaPartData } from "@/components/media-parts";
 import { SubagentPart, type ChildPart } from "@/components/subagent-parts";
@@ -147,6 +147,11 @@ export function AIChat({
 }) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
+  // Screenshots the operator attached, held as Files until the turn is sent: uploading on pick would
+  // leave an artifact behind for every picture somebody chose and then thought better of, and an
+  // artifact no run names is one no retention sweep can see.
+  const [attachments, setAttachments] = useState<File[]>([]);
+  const fileRef = useRef<HTMLInputElement>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [streaming, setStreaming] = useState(false);
   const [status, setStatus] = useState<"thinking" | "working">("thinking");
@@ -362,6 +367,31 @@ export function AIChat({
     const text = input.trim();
     if (text === "" || streaming) return;
 
+    // ‼️ THE UPLOAD HAPPENS BEFORE THE TURN AND ITS FAILURE STOPS THE TURN. A screenshot that silently
+    // failed to reach the model would produce an answer about a picture nobody sent — the operator asks
+    // "what is wrong with this screen?" and gets a confident reply about nothing. Better to say so.
+    let imageArtifactIds: string[] = [];
+    if (attachments.length > 0) {
+      setStatus("thinking");
+      try {
+        imageArtifactIds = await Promise.all(attachments.map((file) => uploadImage(file)));
+      } catch (err) {
+        // Surfaced in the transcript rather than a toast, because it is a fact about the turn the
+        // operator just tried to send and it belongs beside that turn.
+        const detail = err instanceof Error ? err.message : "the screenshot could not be uploaded";
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `err-${Date.now()}`,
+            role: "ai",
+            content: `The screenshot could not be sent, so this turn was not sent either: ${detail}`,
+            timestamp: Date.now(),
+          },
+        ]);
+        return;
+      }
+    }
+
     const aiMsgId = `ai-${Date.now()}`;
     // THE OPERATOR'S MESSAGE IS WHAT THE OPERATOR TYPED. Nothing is appended to it. The repository hint
     // that used to be concatenated here is an `instructions` layer now, sent server-side on every turn;
@@ -372,6 +402,7 @@ export function AIChat({
       { id: aiMsgId, role: "ai", content: "", timestamp: Date.now(), isStreaming: true, toolCalls: [] },
     ]);
     setInput("");
+    setAttachments([]);
     setStreaming(true);
     setStatus("thinking");
 
@@ -381,6 +412,7 @@ export function AIChat({
     try {
       for await (const event of streamGenerate({
         prompt: text,
+        imageArtifactIds,
         sessionId: sessionRef.current ?? undefined,
         bindingId: bindingRef.current !== "" ? bindingRef.current : undefined,
         signal: controller.signal,
@@ -576,9 +608,57 @@ export function AIChat({
             />
           ) : null}
 
+          {attachments.length > 0 ? (
+            <div className="mb-2 flex flex-wrap gap-2" data-testid="chat-attachments">
+              {attachments.map((file, i) => (
+                <span
+                  key={`${file.name}-${i}`}
+                  className="flex items-center gap-1.5 rounded-full bg-white/5 px-2.5 py-1 text-[11px] text-text-secondary"
+                >
+                  <ImageIcon size={11} aria-hidden />
+                  {file.name}
+                  <button
+                    type="button"
+                    aria-label={`Remove ${file.name}`}
+                    onClick={() => setAttachments((prev) => prev.filter((_, j) => j !== i))}
+                    className="text-text-disabled hover:text-text-primary"
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </div>
+          ) : null}
+
           <div className={`glass-elevated rounded-full px-4 py-2 ${streaming ? "relative z-10" : ""}`}>
             <div className="flex items-center gap-2.5">
               <Sparkles size={16} className={streaming ? "shrink-0 animate-pulse text-ai" : "shrink-0 text-ai"} aria-hidden />
+
+              {/* ‼️ A HIDDEN INPUT AND A LABEL-LESS BUTTON THAT DRIVES IT. The file picker is `sr-only`
+                  rather than `display:none` because a hidden input is not focusable and a keyboard user
+                  could never reach it — this tree already records a console form where the same shortcut
+                  cost the whole keyboard path. */}
+              <input
+                ref={fileRef}
+                type="file"
+                accept="image/png,image/jpeg,image/gif,image/webp"
+                multiple
+                data-testid="chat-attach-input"
+                className="sr-only"
+                onChange={(e) => {
+                  setAttachments((prev) => [...prev, ...Array.from(e.target.files ?? [])]);
+                  e.target.value = ""; // so picking the same file twice fires onChange twice
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => fileRef.current?.click()}
+                data-testid="chat-attach"
+                aria-label="Attach a screenshot"
+                className="flex size-7 shrink-0 items-center justify-center rounded-full text-text-disabled transition-colors hover:bg-white/5 hover:text-text-primary"
+              >
+                <ImageIcon size={14} strokeWidth={2} aria-hidden />
+              </button>
 
               <textarea
                 ref={inputRef}

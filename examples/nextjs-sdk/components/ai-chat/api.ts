@@ -95,6 +95,8 @@ export async function* streamGenerate(params: {
   prompt: string;
   sessionId?: string;
   bindingId?: string;
+  /** Artifact ids for screenshots the operator attached; already uploaded, named here by id. */
+  imageArtifactIds?: string[];
   signal?: AbortSignal;
 }): AsyncGenerator<AIStreamEvent> {
   const response = await fetch("/api/chat", {
@@ -102,6 +104,7 @@ export async function* streamGenerate(params: {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       prompt: params.prompt,
+      imageArtifactIds: params.imageArtifactIds,
       sessionId: params.sessionId,
       bindingId: params.bindingId,
     }),
@@ -174,4 +177,24 @@ export async function decideApproval(approvalId: string, requestHash: string, ap
   // relay passes the status through so the screen can say which one it was.
   const body = (await res.json().catch(() => ({}))) as { detail?: string };
   throw new Error(body.detail ?? `HTTP ${res.status}`);
+}
+
+/**
+ * uploadImage sends one attached file through the server relay and returns the artifact id a turn
+ * names.
+ *
+ * ‼️ THE BROWSER NEVER HOLDS A PALAI KEY, which is the stance this whole example demonstrates. The
+ * bytes go to a Route Handler; the credential lives there; what comes back is an id and nothing else.
+ */
+export async function uploadImage(file: File, signal?: AbortSignal): Promise<string> {
+  const res = await fetch("/api/palai/images", { method: "POST", body: file, signal });
+  if (!res.ok) {
+    const problem = (await res.json().catch(() => null)) as { detail?: string } | null;
+    throw new Error(problem?.detail ?? `the upload failed (${res.status})`);
+  }
+  const body = (await res.json()) as { artifactId?: string };
+  if (typeof body.artifactId !== "string" || body.artifactId === "") {
+    throw new Error("the relay returned no artifact id");
+  }
+  return body.artifactId;
 }
