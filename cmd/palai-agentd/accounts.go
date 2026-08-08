@@ -661,6 +661,29 @@ func (a *SysadminctlAccounts) Delete(ctx context.Context, slot int) (string, str
 	// SIGTERM AND THEN SIGKILL, because a worker that is mid-command should be allowed to finish writing
 	// what it has; and `pkill -u` rather than a pid table for the reason the group check is a dial —
 	// the kernel knows which processes hold this uid and this daemon does not.
+	// ‼️ THE LAUNCHD DOMAIN GOES FIRST, AND NOT KNOWING THIS COST THE WHOLE DELETE PATH. Measured on this
+	// Mac on 2026-08-08: `dscl . -delete /Users/palai-s01` answered eDSPermissionError as ROOT, and
+	// `ps -u 701` explained why —
+	//
+	//	5359  1  /usr/libexec/lsd
+	//	5422  1  /usr/sbin/distnoted agent
+	//	5426  1  /usr/sbin/cfprefsd agent
+	//	5477  1  /usr/libexec/trustd --agent
+	//	6079  1  /usr/libexec/secd
+	//	…
+	//
+	// seven processes, every one of them PARENTED BY launchd. The moment ANY process runs as a uid, macOS
+	// materialises a per-user launchd domain and starts these agents in it. They are not ours, killing
+	// them accomplishes nothing because launchd starts them again, and directory services refuses to
+	// remove a record whose domain is live.
+	//
+	// `bootout` is what tears the domain down. It is spelled `user/<uid>` — the per-user domain, not
+	// `gui/<uid>`, which is the one a LOGIN creates and a session account never has. A domain that is
+	// already gone answers non-zero, which is the state this call wants, so its exit is not checked.
+	a.run(ctx, "launchctl", "bootout", "user/"+strconv.Itoa(rec.uid))
+
+	// AND THEN ANYTHING LEFT. bootout takes the domain's jobs with it; this is for a process the account
+	// started outside it — a build the session spawned, a worker mid-command.
 	killed := false
 	for _, signal := range []string{"-TERM", "-KILL"} {
 		if _, err := a.run(ctx, "pkill", signal, "-u", strconv.Itoa(rec.uid)); err == nil {

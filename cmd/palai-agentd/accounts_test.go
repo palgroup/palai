@@ -1219,3 +1219,58 @@ func TestDeleteREFUSESWhenBothToolsFail(t *testing.T) {
 		t.Errorf("the refusal is %q, want one naming BOTH tools and what each said", err)
 	}
 }
+
+// TestDeleteBOOTSOUTTheLaunchdDomainBeforeRemovingTheRecord — THE REASON THE DELETE PATH DID NOT WORK,
+// AND IT WAS NOTHING WE STARTED.
+//
+// Measured on this Mac on 2026-08-08. `dscl . -delete /Users/palai-s01` answered eDSPermissionError as
+// ROOT, and `ps -u 701` explained why: seven processes, every one of them PARENTED BY launchd —
+// `lsd`, `distnoted`, `cfprefsd`, `trustd`, `secd`, an mdworker and an NetFS plug-in host. The moment
+// ANY process runs as a uid, macOS materialises a per-user launchd domain and starts these agents in
+// it. They are not ours; killing them accomplishes nothing because launchd starts them again; and
+// directory services refuses to remove a record whose domain is live.
+//
+// `bootout user/<uid>` is what tears the domain down, and the ORDER is the whole fix: after the record
+// is gone there is no uid left to name.
+func TestDeleteBOOTSOUTTheLaunchdDomainBeforeRemovingTheRecord(t *testing.T) {
+	rec := deleteScript(goodMarker())
+	rec.answers["launchctl bootout user/707"] = ""
+	rec.answers["pkill -TERM -u 707"] = ""
+	rec.answers["pkill -KILL -u 707"] = ""
+	a := newTestAccounts(t, rec)
+
+	if _, _, err := a.Delete(context.Background(), 7); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	bootoutAt, deletedAt := -1, -1
+	for i, call := range rec.calls {
+		switch strings.Join(call, " ") {
+		case "launchctl bootout user/707":
+			bootoutAt = i
+		case "dscl . -delete /Users/palai-s07":
+			deletedAt = i
+		}
+	}
+	if bootoutAt < 0 {
+		t.Fatal("the account's launchd domain was never booted out: macOS starts a per-user domain the " +
+			"moment anything runs as that uid, and directory services refuses to delete a record whose " +
+			"domain is live — the account survives and its slot is lost")
+	}
+	if deletedAt < 0 {
+		t.Fatal("the record was never deleted")
+	}
+	if bootoutAt > deletedAt {
+		t.Errorf("bootout ran at call %d and the delete at %d: after the record is gone there is no uid left "+
+			"to name, so the domain outlives the account", bootoutAt, deletedAt)
+	}
+	// AND IT IS THE PER-USER DOMAIN, NOT THE GUI ONE. `gui/<uid>` is what a LOGIN creates; a session
+	// account never logs in, so booting that out would name a domain that does not exist and leave the
+	// one that does.
+	for _, call := range rec.calls {
+		if joined := strings.Join(call, " "); strings.HasPrefix(joined, "launchctl bootout gui/") {
+			t.Errorf("booted out %q — a session account never logs in, so the GUI domain is not the one "+
+				"holding the record", joined)
+		}
+	}
+}
