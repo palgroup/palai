@@ -362,3 +362,84 @@ func TestEveryVerbThisTypeSPENDSIsOneTheMappingKNOWS(t *testing.T) {
 		}
 	}
 }
+
+// TestASlotThatCannotServeIsSkippedAndNotRetriedForever — ONE BAD INDEX MUST NOT REFUSE EVERY SESSION.
+//
+// Measured on a real Mac on 2026-08-08: /Users/palai-s03 was a template home an earlier install
+// created, and macOS protects such a home against removal AND against rename, so slot 03 could never be
+// given a clean one. Every session that reached for it failed with "workspace planning failed" naming a
+// directory — which reads as a broken control plane rather than as one index out of service.
+//
+// The slot stays HELD on the way past, which looks backwards and is the point: releasing it would hand
+// the same broken index to the very next session and to every one after it.
+func TestASlotThatCannotServeIsSkippedAndNotRetriedForever(t *testing.T) {
+	var asked []int
+	a := &SlotAccounts{
+		slots: map[string]int{},
+		held:  map[int]bool{},
+		log:   func(string, ...any) {},
+		run: func(_ context.Context, verb string, slot int) error {
+			if verb != "create" {
+				return nil
+			}
+			asked = append(asked, slot)
+			if slot < 3 {
+				// The SHAPE the production run closure returns, not a string that looks like it: the
+				// class is carried as a value, which is the whole reason this branch is decidable.
+				return &daemonRefusal{Verb: "create", Slot: slot, Class: macagent.ClassRefused,
+					Message: "a home this daemon can neither move aside nor remove"}
+			}
+			return nil
+		},
+	}
+
+	account, err := a.Acquire(context.Background(), "ses_x")
+	if err != nil {
+		t.Fatalf("two unusable slots took the whole session down: %v", err)
+	}
+	want, err := macagent.AccountUID(3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if account.UID != want {
+		t.Errorf("UID = %d, want %d — the first slot that could actually serve", account.UID, want)
+	}
+	if len(asked) != 3 || asked[0] != 1 || asked[1] != 2 || asked[2] != 3 {
+		t.Errorf("slots asked = %v, want 1,2,3 in order", asked)
+	}
+
+	// AND THE BROKEN ONES ARE NOT OFFERED AGAIN. A second session must not re-derive them.
+	asked = nil
+	if _, err := a.Acquire(context.Background(), "ses_y"); err != nil {
+		t.Fatalf("second acquire: %v", err)
+	}
+	for _, s := range asked {
+		if s < 3 {
+			t.Errorf("slot %02d was offered again after being taken out of service; every session on this "+
+				"machine would pay for it", s)
+		}
+	}
+}
+
+// TestAMachineLevelRefusalIsNOTSkipped is the other side, and without it the rule above would turn one
+// broken machine into ninety-nine identical failures and a session that reports the LAST of them.
+func TestAMachineLevelRefusalIsNOTSkipped(t *testing.T) {
+	tries := 0
+	a := &SlotAccounts{
+		slots: map[string]int{}, held: map[int]bool{}, log: func(string, ...any) {},
+		run: func(_ context.Context, verb string, slot int) error {
+			if verb != "create" {
+				return nil
+			}
+			tries++
+			return &daemonRefusal{Verb: "create", Slot: slot, Class: macagent.ClassInternal,
+				Message: "this host has no IOPlatformUUID"}
+		},
+	}
+	if _, err := a.Acquire(context.Background(), "ses_x"); err == nil {
+		t.Fatal("a machine-level failure was treated as a slot being out of service")
+	}
+	if tries != 1 {
+		t.Errorf("the create was attempted %d times; a machine-level refusal must be reported, not walked past", tries)
+	}
+}

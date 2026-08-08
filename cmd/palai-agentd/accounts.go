@@ -409,14 +409,31 @@ func (a *SysadminctlAccounts) ensureHome(name string, uid, gid int, orphanStale 
 	// account with the OLD session's files in it. That is a cross-tenant read with every layer reporting
 	// success, which is the one outcome per-session accounts exist to prevent.
 	//
-	// Renamed rather than deleted, because deleting is exactly what TCC refuses: the rename is a write
-	// to /Users, which root may always do, and it leaves the residue where an operator can see it.
+	// ‼️ RENAME FIRST, THEN DELETE, AND THE ORDER IS A CORRECTION OF A CEILING THIS FILE OVERSTATED. The
+	// sentence here said a rename "is a write to /Users, which root may always do". Measured the same
+	// night, as root:
+	//
+	//	rename /Users/palai-s03 /Users/palai-s03.orphaned-…: operation not permitted
+	//
+	// macOS protects a home directory against being MOVED as well as against having its template
+	// subdirectories removed — the template homes this daemon used to create are behind TCC on both
+	// verbs. Overstating a ceiling is as wrong as understating one: it left a slot that could never be
+	// given a clean home, and the refusal took the whole session down with it.
+	//
+	// So both are tried. A rename is preferred because it keeps the previous tenant's bytes where an
+	// operator can see them; a delete is the fallback for the homes this daemon makes itself, which
+	// carry no protected subdirectory and remove cleanly.
 	if _, err := os.Lstat(diskHome); err == nil && orphanStale {
 		orphan := fmt.Sprintf("%s.orphaned-%d", diskHome, a.now().UTC().Unix())
-		if err := os.Rename(diskHome, orphan); err != nil {
-			return macagent.Errorf(macagent.ClassInternal,
-				"%s already exists and could not be moved aside to %s, so this slot cannot be given a clean home: %v",
-				diskHome, orphan, err)
+		renameErr := os.Rename(diskHome, orphan)
+		if renameErr != nil {
+			if rmErr := os.RemoveAll(diskHome); rmErr != nil {
+				return macagent.Errorf(macagent.ClassRefused,
+					"%s is a directory this daemon can neither move aside (%v) nor remove (%v), so this slot cannot be "+
+						"given a clean home and must not be handed to a session; it is a macOS-protected home left by an "+
+						"earlier install — remove it with Full Disk Access granted, or leave this slot out of service",
+					diskHome, renameErr, rmErr)
+			}
 		}
 	}
 	if err := os.MkdirAll(diskHome, 0o710); err != nil {

@@ -2,6 +2,7 @@ package execution
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -210,7 +211,7 @@ func NewDaemonSessionAccounts(socketPath string) *SlotAccounts {
 			case verb == "create" && resp.Class == macagent.ClassExists:
 			case verb == "destroy" && resp.Class == macagent.ClassNotFound:
 			default:
-				return fmt.Errorf("session account %s slot %02d: daemon refused (%s): %s", verb, slot, resp.Class, resp.Message)
+				return &daemonRefusal{Verb: verb, Slot: slot, Class: resp.Class, Message: resp.Message}
 			}
 			return nil
 		},
@@ -293,8 +294,24 @@ func (a *SlotAccounts) Acquire(ctx context.Context, sessionID string) (SessionAc
 
 	if err := a.run(ctx, "create", slot); err != nil {
 		a.mu.Lock()
-		delete(a.held, slot)
 		delete(a.slots, sessionID)
+		// ‼️ A SLOT THAT REFUSED STAYS HELD, AND THAT IS THE OPPOSITE OF WHAT IT LOOKS LIKE. Releasing it
+		// would hand the SAME broken slot to the very next session and to every one after, so a single
+		// unusable index would refuse every session on the machine forever. Keeping it held takes one
+		// index out of service and leaves the other ninety-eight; the daemon's own refusal names the
+		// operator's cure.
+		//
+		// Measured on a real Mac on 2026-08-08: /Users/palai-s03 was a template home an earlier install
+		// created, which macOS protects against removal AND against rename, so slot 03 could never be
+		// given a clean home — and every session that reached for it failed with "workspace planning
+		// failed" naming a directory, which reads as a broken control plane.
+		a.mu.Unlock()
+		if isSlotOutOfService(err) {
+			a.logf("session %s: slot %02d is out of service and will not be offered again: %v", sessionID, slot, err)
+			return a.Acquire(ctx, sessionID)
+		}
+		a.mu.Lock()
+		delete(a.held, slot)
 		a.mu.Unlock()
 		return SessionAccount{}, err
 	}
@@ -367,4 +384,34 @@ func SlotDirFor(root string, account SessionAccount) (string, error) {
 		return "", fmt.Errorf("slot directory: uid %d is not a session slot", account.UID)
 	}
 	return filepath.Join(root, fmt.Sprintf("slot-%02d", slot)), nil
+}
+
+// daemonRefusal is a refusal the daemon reported, with the CLASS it reported it under kept as a value.
+//
+// ‼️ IT IS A TYPE BECAUSE THE STRING FORM CANNOT BE ASKED THE QUESTION. isSlotOutOfService first matched
+// `strings.Contains(err.Error(), "refused")` — and the message it reads is `daemon refused (internal)`,
+// which contains that word for a reason that has nothing to do with the class. A machine-level failure
+// then looked like a slot being out of service, and Acquire walked all ninety-nine indexes before
+// reporting the last one. This tree already records that every path/membership comparison it has
+// shipped was eventually defeated; a class comparison is the same shape.
+type daemonRefusal struct {
+	Verb    string
+	Slot    int
+	Class   macagent.Class
+	Message string
+}
+
+func (e *daemonRefusal) Error() string {
+	return fmt.Sprintf("session account %s slot %02d: daemon refused (%s): %s", e.Verb, e.Slot, e.Class, e.Message)
+}
+
+// isSlotOutOfService reports whether a create refusal is about THIS SLOT rather than about the machine.
+//
+// The distinction decides whether the next session gets a different index or the same error. ClassRefused
+// is the daemon saying "this one, permanently" — a home it can neither move aside nor remove, a group
+// somebody else holds — while ClassInternal is a machine-level failure that trying another slot would
+// only repeat ninety-eight more times.
+func isSlotOutOfService(err error) bool {
+	var refusal *daemonRefusal
+	return errors.As(err, &refusal) && refusal.Class == macagent.ClassRefused
 }
