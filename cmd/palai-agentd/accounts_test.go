@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -39,6 +40,8 @@ type recordingRun struct {
 	// what `sysadminctl -addUser -UID` was measured doing on this Mac, and a fake that could not
 	// reproduce it could not be used to prove the read-back catches it.
 	substituteUID string
+	// chowns is what was handed to whom, by base name, in order.
+	chowns []string
 }
 
 func (r *recordingRun) run(_ context.Context, name string, args ...string) (string, error) {
@@ -103,9 +106,16 @@ func newTestAccounts(t *testing.T, rec *recordingRun) *SysadminctlAccounts {
 		// The settle a delete spends after signalling the account's processes. Substituted so the shipped
 		// value is driven without being waited out — never shortened in production, where a signal that
 		// has not landed is the race the settle exists for.
-		sleep: func(time.Duration) {},
-		now:   func() time.Time { return time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC) },
-		goos:  "darwin",
+		sleep:     func(time.Duration) {},
+		usersRoot: t.TempDir(),
+		// Only uid 0 may give a file to another uid. Recorded rather than performed, so the test can
+		// assert WHAT was handed to WHOM without the suite needing root.
+		chown: func(path string, uid, gid int) error {
+			rec.chowns = append(rec.chowns, fmt.Sprintf("%s -> %d:%d", filepath.Base(path), uid, gid))
+			return nil
+		},
+		now:  func() time.Time { return time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC) },
+		goos: "darwin",
 	}
 }
 
@@ -143,15 +153,40 @@ func TestCreateRunsArgvAndNeverACommandLine(t *testing.T) {
 	}}
 	a := newTestAccounts(t, rec)
 
-	// It gets as far as the post-condition and then refuses, because /Users/palai-s07 does not exist on
-	// the machine running this test. That refusal IS the assertion: a Create that returned success here
-	// would be one that handed out an account with nowhere to run.
-	_, _, err := a.Create(context.Background(), 7)
-	if err == nil {
-		t.Fatal("Create succeeded although /Users/palai-s07 does not exist; the home post-condition is not firing")
+	// THE HOME IS MADE HERE AND `createhomedir` IS GONE, which this asserts by its absence from the
+	// sequence below and by the directory existing after. createhomedir populated from the user template
+	// — Music, Pictures, Desktop, Library/Containers — and macOS puts those exact paths behind TCC:
+	// `sudo rm -rf /Users/palai-s05` answered `Operation not permitted` on eight of them AS ROOT on
+	// 2026-08-08, and the home survived. An account whose home cannot be removed is an account that
+	// cannot be destroyed, which is the whole idle half of this lifecycle.
+	_, home, err := a.Create(context.Background(), 7)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
 	}
-	if !strings.Contains(err.Error(), "/Users/palai-s07 is not a directory") {
-		t.Errorf("Create failed with %q, want a refusal naming the missing home", err)
+	if home != "/Users/palai-s07" {
+		t.Errorf("home = %q, want the path directory services was told about", home)
+	}
+	diskHome := filepath.Join(a.usersRoot, "palai-s07")
+	fi, err := os.Stat(diskHome)
+	if err != nil || !fi.IsDir() {
+		t.Fatalf("%s is not a directory after a successful create; the account has nowhere to run", diskHome)
+	}
+	// x WITHOUT r: the control plane reaches one known path inside (the worker's socket) and cannot list
+	// the home. 0700 would make the socket unreachable, which is a machine that mints accounts and
+	// cannot run a command as one.
+	if got := fi.Mode().Perm(); got != 0o710 {
+		t.Errorf("%s is mode %04o, want 0710", diskHome, got)
+	}
+	if _, err := os.Stat(filepath.Join(diskHome, "tmp")); err != nil {
+		t.Errorf("no TMPDIR under %s: the worker's environment names $HOME/tmp and a toolchain would fail "+
+			"somewhere far from here", diskHome)
+	}
+	// AND BOTH WERE GIVEN TO THE ACCOUNT. Only uid 0 can do this, so it is recorded rather than
+	// performed — but a create that made the directories and left them owned by root is one whose
+	// session cannot write its own HOME.
+	wantChowns := []string{"palai-s07 -> 707:807", "tmp -> 707:807"}
+	if strings.Join(rec.chowns, " | ") != strings.Join(wantChowns, " | ") {
+		t.Errorf("ownership handed over was %v, want %v", rec.chowns, wantChowns)
 	}
 
 	want := []string{
@@ -174,7 +209,6 @@ func TestCreateRunsArgvAndNeverACommandLine(t *testing.T) {
 		// creator reported success and wrote something else.
 		"dscl . -read /Users/palai-s07 UniqueID",
 		"dscl . -create /Users/palai-s07 " + markerAttr + " " + markerMagic + ":1:" + testHostUUID + ":palai-s07:2026-08-05T12:00:00Z",
-		"createhomedir -c -u palai-s07",
 	}
 	// The first call is the existence probe; the privileged sequence starts after it.
 	for i, w := range want {
@@ -901,5 +935,92 @@ func TestDeleteStopsTheAccountsProcessesBeforeRemovingItsRecord(t *testing.T) {
 	if killedAt > deletedAt {
 		t.Errorf("the processes were signalled at call %d and the record deleted at %d: a uid whose name is "+
 			"already gone is one no later reconciliation can name", killedAt, deletedAt)
+	}
+}
+
+// TestTheHomeOnDiskIsTheHomeInTheDirectory pins the two halves of one path together. macagent.HomeDir
+// is what directory services is TOLD; usersRoot joined with the account name is what this daemon
+// WRITES. They are separate so a test can relocate the second; a production pair that disagreed would
+// be an account whose NFSHomeDirectory points at a directory nothing ever created.
+func TestTheHomeOnDiskIsTheHomeInTheDirectory(t *testing.T) {
+	for _, slot := range []int{1, 7, 42, 99} {
+		name, err := macagent.AccountName(slot)
+		if err != nil {
+			t.Fatalf("AccountName(%d): %v", slot, err)
+		}
+		declared, err := macagent.HomeDir(slot)
+		if err != nil {
+			t.Fatalf("HomeDir(%d): %v", slot, err)
+		}
+		if written := filepath.Join(darwinUsersRoot, name); written != declared {
+			t.Errorf("slot %02d: this daemon writes %s and tells directory services %s", slot, written, declared)
+		}
+	}
+}
+
+// TestAPreviousTenantsHomeIsMovedAsideAndNeverInherited — SLOTS ARE REUSED, AND A DIRECTORY IS NOT.
+//
+// A home left by a crashed destroy, by a machine that outlived a scheme change, or by the template
+// homes this daemon used to create and could not remove, would arrive owned by the NEW account with the
+// OLD session's files in it. That is a cross-tenant read with every layer reporting success — the one
+// outcome per-session accounts exist to prevent.
+func TestAPreviousTenantsHomeIsMovedAsideAndNeverInherited(t *testing.T) {
+	rec := &recordingRun{answers: map[string]string{
+		"dscl . -create /Groups/palai-s07-grp":                                                                                         "",
+		"dscl . -create /Groups/palai-s07-grp PrimaryGroupID 807":                                                                      "",
+		"dscl . -create /Groups/palai-s07-grp RealName Palai session slot 07":                                                          "",
+		"dseditgroup -o edit -a operator -t user palai-s07-grp":                                                                        "",
+		"dscl . -create /Users/palai-s07 UniqueID 707":                                                                                 "",
+		"dscl . -create /Users/palai-s07 PrimaryGroupID 807":                                                                           "",
+		"dscl . -create /Users/palai-s07 UserShell /bin/zsh":                                                                           "",
+		"dscl . -create /Users/palai-s07 NFSHomeDirectory /Users/palai-s07":                                                            "",
+		"dscl . -create /Users/palai-s07 RealName Palai session s07":                                                                   "",
+		"dscl . -create /Users/palai-s07 " + markerAttr + " " + markerMagic + ":1:" + testHostUUID + ":palai-s07:2026-08-05T12:00:00Z": "",
+	}}
+	a := newTestAccounts(t, rec)
+	a.allocationRoot = t.TempDir()
+	a.ownerOf = func(string) (int, error) { return 501, nil }
+	a.lookupUser = func(int) (string, error) { return "operator", nil }
+
+	// The previous tenant's home, with the previous tenant's work in it.
+	stale := filepath.Join(a.usersRoot, "palai-s07")
+	if err := os.MkdirAll(stale, 0o700); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	const secret = "the previous session's private key"
+	if err := os.WriteFile(filepath.Join(stale, "leftover"), []byte(secret), 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if _, _, err := a.Create(context.Background(), 7); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	entries, err := os.ReadDir(stale)
+	if err != nil {
+		t.Fatalf("read the new home: %v", err)
+	}
+	for _, e := range entries {
+		if e.Name() == "leftover" {
+			t.Fatal("the new account inherited the previous tenant's file: a session would open another " +
+				"customer's work with every layer reporting a clean create")
+		}
+	}
+	// AND IT IS MOVED, NOT DELETED, because deleting is exactly what macOS TCC refuses on a home — the
+	// residue has to stay somewhere an operator can see it.
+	moved := false
+	all, _ := os.ReadDir(a.usersRoot)
+	for _, e := range all {
+		if strings.HasPrefix(e.Name(), "palai-s07.orphaned-") {
+			moved = true
+			body, _ := os.ReadFile(filepath.Join(a.usersRoot, e.Name(), "leftover"))
+			if string(body) != secret {
+				t.Errorf("the orphaned home does not carry what was in it: %q", body)
+			}
+		}
+	}
+	if !moved {
+		t.Error("the previous home was neither inherited nor moved aside; it was destroyed, which is the " +
+			"one thing TCC will not let this daemon do reliably")
 	}
 }

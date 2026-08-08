@@ -55,6 +55,10 @@ func main() {
 	// the installer hung with a partial line on screen. The first install on a machine worked (nothing to
 	// probe) and every re-install after it hung, which is the shape a provisioner meets on its second
 	// boot rather than its first.
+	if len(os.Args) > 1 && (os.Args[1] == "help" || os.Args[1] == "--help" || os.Args[1] == "-h") {
+		fmt.Print(deviceUsage)
+		return
+	}
 	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-version" || os.Args[1] == "version") {
 		fmt.Println(version.Resolve())
 		return
@@ -76,6 +80,17 @@ func main() {
 			log.Fatalf("%v", err)
 		}
 		return
+	}
+
+	// ‼️ AND ANYTHING ELSE IS A REFUSAL, because the alternative is what this binary did until 2026-08-08:
+	// an unrecognised first argument fell through to the serving loop, so `palai help` STARTED A DAEMON
+	// and sat there. On a device that is a typo turning into a long-running process nobody meant to
+	// launch, and on a terminal it reads as a hang. The bare form — no arguments at all — is still the
+	// serving one, because that is what launchd invokes.
+	if len(os.Args) > 1 {
+		fmt.Fprintf(os.Stderr, "palai: unknown command %q\n\n", os.Args[1])
+		fmt.Fprint(os.Stderr, deviceUsage)
+		os.Exit(2)
 	}
 
 	// ‼️ BEFORE ENROLMENT, NOT AFTER. What this machine can isolate with is measured here so it travels
@@ -844,3 +859,18 @@ func selfUpdate(installed *device.Installation) func(context.Context, string) (b
 		}.Apply(ctx, version.Resolve())
 	}
 }
+
+// deviceUsage is everything this binary does, and the list is SHORT on purpose. It is the device agent:
+// a machine is enrolled with it and then it serves. The self-host stack's lifecycle — `up`, `doctor`,
+// `backup`, `upgrade` — belongs to palai-selfhost, a different binary for a different operator, and
+// scripts/release/build.sh already records what happens when the two share a name: a directory carrying
+// both had two unrelated programs under one, and `./palai enroll` in it answered "unknown command".
+const deviceUsage = `palai — the device agent
+
+  palai                    serve: park, take leases, run this machine's sessions (what launchd invokes)
+  palai enroll [flags]     join this machine to a control plane
+  palai agentd install     install palai-agentd + palai-session-worker (needs root, once per machine)
+  palai version            print this binary's build stamp
+
+The self-host stack is a different binary: palai-selfhost (up, doctor, backup, restore, upgrade).
+`

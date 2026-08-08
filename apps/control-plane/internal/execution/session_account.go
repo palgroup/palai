@@ -120,8 +120,9 @@ const maxSessionSlots = 99
 
 // SlotAccounts maps allocations onto the session slots the operator tooling names.
 //
-// THE SLOT IS THE UNIT BECAUSE THE TOOLING'S IS. palai-session-account takes a two-digit index and
-// nothing else — that narrowness is the whole reason its sudoers entry is safe to grant — so the control
+// THE SLOT IS THE UNIT BECAUSE THE DAEMON'S PROTOCOL IS. palai-agentd's every verb takes a two-digit
+// index and nothing else — that narrowness is the whole reason group membership is a safe credential to
+// grant, and it is what a sudoers entry could never be as narrow as — so the control
 // plane owns the allocation→slot mapping rather than passing an allocation id into a privileged call
 // that would then have to parse one.
 //

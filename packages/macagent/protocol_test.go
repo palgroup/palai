@@ -19,7 +19,7 @@ func classOf(t *testing.T, err error) macagent.Class {
 
 // TestARequestIsRefusedOnShapeNotOnArithmetic is the protocol half of the slot rule.
 //
-// It refuses on SHAPE for the same reason validate_index in scripts/ops/palai-session-account does:
+// It refuses on SHAPE rather than on range, and the reason is parser disagreement:
 // `1`, `+1`, ` 1`, `1e1` and `0x11` are all things some parser will happily turn into a number, none of
 // them is what this tooling formats, and a value that took a different path to the same integer took a
 // path nobody tested.

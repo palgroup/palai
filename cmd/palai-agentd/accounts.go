@@ -109,6 +109,15 @@ type SysadminctlAccounts struct {
 	// hostUUID identifies this Mac, binding a marker to it.
 	hostUUID func(ctx context.Context) (string, error)
 	now      func() time.Time
+	// usersRoot is "/Users" in production and a temporary directory in tests. It is a field for the same
+	// reason foldersRoot is: the alternative is a test that creates and deletes real home directories on
+	// the machine running it. macagent.HomeDir stays the ONE producer of the path directory services is
+	// told about; this only relocates the filesystem side, and TestTheHomeOnDiskIsTheHomeInTheDirectory
+	// pins that the two agree in production.
+	usersRoot string
+	// chown is os.Chown in production. Only uid 0 may give a file to another uid, so this is the one
+	// filesystem call in this file a test cannot make — a field, for the same reason `run` is.
+	chown func(path string, uid, gid int) error
 	// sleep is time.Sleep in production. It is a field so a test can drive the shipped settle without
 	// spending it, which is the same reason macagent.Prober carries one.
 	sleep func(time.Duration)
@@ -167,6 +176,11 @@ func lookupUserName(uid int) (string, error) {
 	}
 	return u.Username, nil
 }
+
+// darwinUsersRoot is where macOS keeps local home directories, and macagent.HomeDir formats a path
+// under it. The two are pinned equal by a test rather than derived from each other, because one is what
+// directory services is TOLD and the other is what this process WRITES.
+const darwinUsersRoot = "/Users"
 
 // accountReapSettle is how long a delete waits between signalling an account's processes and removing
 // its record. Short, because the only process there by construction is a session worker, and a worker
@@ -484,32 +498,57 @@ func (a *SysadminctlAccounts) Create(ctx context.Context, slot int) (string, str
 		return "", "", macagent.Errorf(macagent.ClassInternal, "marking %s failed, so it could never be deleted by this daemon: %v: %s", name, err, strings.TrimSpace(out))
 	}
 
-	// -home ASSIGNS a home directory; it does not CREATE one. sysadminctl says so in its own output
-	// ("Home directory is assigned (not created!)") and an earlier shell creator shipped a defect by reading
-	// straight past it. createhomedir is the supported way to populate one from the user template;
-	// -c means this machine, -u names the account.
-	if out, err := a.run(ctx, "createhomedir", "-c", "-u", name); err != nil {
-		return "", "", macagent.Errorf(macagent.ClassInternal, "populating %s failed: %v: %s", home, err, strings.TrimSpace(out))
-	}
-	// AND THEN VERIFY IT, because createhomedir exits 0 on paths it did not create — a mobile-account
-	// variant, a full disk, a /Users that is not writable. A directory about to be chmod 700 and handed
-	// a session is one this daemon must have SEEN.
-	if fi, err := os.Stat(home); err != nil || !fi.IsDir() {
-		return "", "", macagent.Errorf(macagent.ClassInternal,
-			"created %s but %s is not a directory, so this session has nowhere to run; delete the slot before retrying", name, home)
-	}
-	// ‼️ 0710 AND NOT 0700, AND THE ONE BIT IS LOAD-BEARING. The default createhomedir leaves is
-	// drwxr-x--- with group `staff`, which lets every other account on the Mac traverse and READ this
-	// one — the first thing to fix on a shared machine. But the group is this slot's own group now, and
-	// its other member is the control plane, which has to reach ONE thing inside: the session worker's
-	// socket (macagent.WorkerSocket). 0700 makes that socket unreachable, which is a machine that mints
-	// accounts and cannot run a single command as one.
+	// ‼️ THE HOME IS MADE HERE AND `createhomedir` IS NOT USED, AND THE REASON WAS MEASURED ON THIS MAC
+	// ON 2026-08-08. createhomedir populates from the user template — Music, Pictures, Desktop,
+	// Library/Containers — and macOS puts those exact paths behind TCC. `sudo rm -rf /Users/palai-s05`
+	// answered `Operation not permitted` on eight of them AS ROOT, and the home survived. An account
+	// whose home cannot be removed is an account that cannot be DESTROYED, which is the entire idle half
+	// of this lifecycle: created when a session starts, destroyed when it goes quiet.
 	//
-	// x WITHOUT r IS THE WHOLE POINT: the control plane can traverse to a path it already knows and
-	// cannot LIST the account's home. And no other session is in this group, so for every other tenant
-	// on the machine the answer is still nothing at all.
-	if err := os.Chmod(home, 0o710); err != nil {
-		return "", "", macagent.Errorf(macagent.ClassInternal, "tightening %s to 0710 failed: %v", home, err)
+	// A SESSION ACCOUNT NEEDS NONE OF THAT TEMPLATE. It never logs in, never opens a GUI app and never
+	// has a Desktop. It needs a directory it owns and a TMPDIR, so those are the two things made — and
+	// what is never created is never protected.
+	diskHome := filepath.Join(a.usersRoot, name)
+
+	// ‼️ A HOME THAT IS ALREADY THERE IS MOVED ASIDE AND NEVER INHERITED. Slots are reused and a
+	// directory is not: one left by a crashed destroy, by a machine that outlived a scheme change, or by
+	// the template homes this daemon used to create and could not remove, would arrive owned by the NEW
+	// account with the OLD session's files in it. That is a cross-tenant read with every layer reporting
+	// success, which is the one outcome per-session accounts exist to prevent.
+	//
+	// Renamed rather than deleted, because deleting is exactly what TCC refuses: the rename is a write
+	// to /Users, which root may always do, and it leaves the residue where an operator can see it.
+	if _, err := os.Lstat(diskHome); err == nil {
+		orphan := fmt.Sprintf("%s.orphaned-%d", diskHome, a.now().UTC().Unix())
+		if err := os.Rename(diskHome, orphan); err != nil {
+			return "", "", macagent.Errorf(macagent.ClassInternal,
+				"%s already exists and could not be moved aside to %s, so this slot cannot be given a clean home: %v",
+				diskHome, orphan, err)
+		}
+	}
+	if err := os.MkdirAll(diskHome, 0o710); err != nil {
+		return "", "", macagent.Errorf(macagent.ClassInternal, "creating %s failed: %v", diskHome, err)
+	}
+	if err := a.chown(diskHome, uid, gid); err != nil {
+		return "", "", macagent.Errorf(macagent.ClassInternal, "giving %s to %s: %v", diskHome, name, err)
+	}
+	// TMPDIR, because the session worker's environment names $HOME/tmp and a TMPDIR that does not exist
+	// is a toolchain that fails somewhere far from here.
+	tmp := filepath.Join(diskHome, "tmp")
+	if err := os.MkdirAll(tmp, 0o700); err != nil {
+		return "", "", macagent.Errorf(macagent.ClassInternal, "creating %s failed: %v", tmp, err)
+	}
+	if err := a.chown(tmp, uid, gid); err != nil {
+		return "", "", macagent.Errorf(macagent.ClassInternal, "giving %s to %s: %v", tmp, name, err)
+	}
+	// ‼️ x WITHOUT r, AND THE ONE BIT IS LOAD-BEARING. The group is this slot's own and its other member
+	// is the control plane, which has to reach exactly ONE path inside: the session worker's socket
+	// (macagent.WorkerSocket). 0700 makes that socket unreachable, which is a machine that mints
+	// accounts and cannot run a single command as one. x lets it traverse to a path it already knows; no
+	// r means it cannot list the home, and no other tenant is in the group at all. MkdirAll applies the
+	// process umask, so the mode is SET rather than assumed.
+	if err := os.Chmod(diskHome, 0o710); err != nil {
+		return "", "", macagent.Errorf(macagent.ClassInternal, "tightening %s to 0710 failed: %v", diskHome, err)
 	}
 	return name, home, nil
 }
@@ -577,7 +616,7 @@ func (a *SysadminctlAccounts) Delete(ctx context.Context, slot int) (string, str
 	if out, err := a.run(ctx, "dscl", ".", "-delete", "/Users/"+name); err != nil {
 		return "", "", macagent.Errorf(macagent.ClassInternal, "deleting the record for %s failed: %v: %s", name, err, strings.TrimSpace(out))
 	}
-	if err := os.RemoveAll(home); err != nil {
+	if err := os.RemoveAll(filepath.Join(a.usersRoot, name)); err != nil {
 		return "", "", macagent.Errorf(macagent.ClassInternal, "the record for %s is gone but %s could not be removed: %v", name, home, err)
 	}
 	// Verified rather than trusted, the same way a reconciler checks both halves: the record can go

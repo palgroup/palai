@@ -16,8 +16,9 @@
 #   scripts/live/ios-demo-smoke --with-build          # additionally builds the app and shows a screenshot
 #   scripts/live/ios-demo-smoke --with-accounts       # additionally proves the per-session uid
 #
-# --with-accounts needs the privileged helper installed:
-#   scripts/ops/palai-session-account install-sudoers "$(id -un)"   # prints the line; you install it
+# --with-accounts needs palai-agentd installed on this Mac. It is ONE command, run once, and it needs
+# no sudoers entry — the daemon exists so that nothing has to be argued into running as root:
+#   sudo palai agentd install
 set -uo pipefail
 
 API="${PALAI_BASE_URL:-http://127.0.0.1:60351}"

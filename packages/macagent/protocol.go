@@ -104,7 +104,7 @@ type Verb uint8
 
 // The verb set is closed and it is small. Every entry is one thing the daemon can be asked to do; there
 // is no pass-through, no flag, and no escape hatch, because the sudoers lesson in
-// scripts/ops/palai-session-account applies unchanged here — the shape of the privilege IS the
+// the deleted shell surface applies unchanged here — the shape of the privilege IS the
 // privilege.
 //
 // VerbVersion grants NOTHING: it takes no argument, touches no account, and answers a build stamp
@@ -277,7 +277,7 @@ func HomeDir(slot int) (string, error) {
 // This one guards the other direction: the daemon reads account names back OUT of directory services
 // when it lists and when it deletes, and a record it did not create must not be acted on because it
 // happened to turn up in an enumeration. It refuses on SHAPE — exactly two digits after the prefix —
-// for the same reason validate_index in palai-session-account does: `1`, `+1`, ` 1` and `0x11` are all
+// for the same reason a shell validator has to: `1`, `+1`, ` 1` and `0x11` are all
 // things an integer parse will happily accept, and a value that took a different path to the same
 // number took a path nobody tested.
 func IsAccountName(name string) (int, bool) {
