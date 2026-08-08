@@ -56,6 +56,7 @@ func ourRecord(slot int) *recordingRun {
 func newSpawnAccounts(t *testing.T, rec *recordingRun, spy *spawnSpy) *SysadminctlAccounts {
 	t.Helper()
 	accounts := newTestAccounts(t, rec)
+	accounts.allocationRoot = t.TempDir()
 	accounts.spawn = spy.spawn
 	accounts.workerPath = writeWorker(t, 0o755)
 	return accounts
@@ -127,10 +128,22 @@ func TestASpawnedWorkerRunsAsTheSlotsAccount(t *testing.T) {
 			"cannot observe is a claim rather than a measurement", pid)
 	}
 
-	wantHome, _ := macagent.HomeDir(slot)
-	if w.Dir != wantHome {
-		t.Errorf("the worker's working directory is %q, want %q; a worker started where launchd left root "+
-			"writes its scratch files into root's directory", w.Dir, wantHome)
+	// ‼️ THE SLOT DIRECTORY AND NOT THE ACCOUNT'S HOME, WHICH IT WAS UNTIL 2026-08-08. The worker binds
+	// its socket in whatever directory it is started in, and the control plane has to reach that socket:
+	// it OWNS the slot directory, while it can never join the account's own group — a process's
+	// supplementary groups are fixed at exec, and a session account is created while the plane is already
+	// running. Measured that night: `id -Gn` in a fresh shell listed palai-s01-grp while the plane
+	// serving that session did not hold it, and every dial into the home answered EACCES.
+	//
+	// The property the old assertion protected is unchanged and still asserted: it is NOT the directory
+	// launchd left root in.
+	wantDir := filepath.Join(accounts.allocationRoot, SlotDirName(slot))
+	if w.Dir != wantDir {
+		t.Errorf("the worker's working directory is %q, want the slot directory %q — that is where it binds "+
+			"its socket, and the only place the control plane can reach it by ownership", w.Dir, wantDir)
+	}
+	if w.Dir == "/" || w.Dir == "" {
+		t.Error("the worker starts where launchd left root, and writes its scratch files into root's directory")
 	}
 	if w.Path != accounts.workerPath {
 		t.Errorf("the worker's program is %q, want %q — the daemon chooses the program and this is the only "+
@@ -151,6 +164,9 @@ func TestASpawnedWorkerRunsAsTheSlotsAccount(t *testing.T) {
 				"variable nobody named cannot arrive", entry)
 		}
 	}
+	// HOME is still the ACCOUNT'S OWN, which is a different question from where the process starts: the
+	// working directory is where its socket lives, HOME is where its tools write.
+	wantHome, _ := macagent.HomeDir(slot)
 	if !hasEnv(w.Env, "HOME="+wantHome) {
 		t.Errorf("the worker's HOME is not %s; its environment was %v — root's HOME reaching a tenant process "+
 			"is the residue this phase removes", wantHome, w.Env)
@@ -243,6 +259,7 @@ func TestSpawnRefusesEveryAccountItDidNotCreate(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			spy := &spawnSpy{}
 			accounts := newTestAccounts(t, tc.rec)
+			accounts.allocationRoot = t.TempDir()
 			accounts.spawn = spy.spawn
 			accounts.workerPath = writeWorker(t, tc.worker)
 
@@ -285,6 +302,7 @@ func TestSpawnRefusesEveryAccountItDidNotCreate(t *testing.T) {
 func TestSpawnRefusesAWorkerBinaryThatIsNotThere(t *testing.T) {
 	spy := &spawnSpy{}
 	accounts := newTestAccounts(t, ourRecord(7))
+	accounts.allocationRoot = t.TempDir()
 	accounts.spawn = spy.spawn
 	accounts.workerPath = filepath.Join(t.TempDir(), "absent")
 

@@ -101,8 +101,8 @@ func TestACommandRunsTHROUGHTheWorkerWhenThisProcessCannotDrop(t *testing.T) {
 	var seen macagent.WorkerRequest
 	standInWorker(t, socket, &seen)
 
-	// The dial is redirected rather than the path: WorkerSocket derives from the account's home, which
-	// this process cannot create, and a test that rewrote the derivation would stop measuring it.
+	// The dial is redirected rather than the path: the socket derives from the allocation's parent, which
+	// this process does not lay out, and a test that rewrote the derivation would stop measuring it.
 	restore := dialWorker
 	dialWorker = func(string) (net.Conn, error) { return net.Dial("unix", socket) }
 	t.Cleanup(func() { dialWorker = restore })

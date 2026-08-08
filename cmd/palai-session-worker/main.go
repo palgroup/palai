@@ -66,10 +66,15 @@ func run() error {
 			"worker must BE a session account, and starting one as anybody else would run a tenant's commands as that "+
 			"principal", uid, macagent.UIDBase+1, macagent.UIDBase+macagent.MaxSlot)
 	}
-	socket, err := macagent.WorkerSocket(slot)
+	// ‼️ THE SOCKET IS IN THE DIRECTORY THE DAEMON STARTED THIS PROCESS IN, which is the slot's allocation
+	// directory. Derived from the cwd rather than from the slot, because the two principals that must
+	// meet here reach it differently: the control plane OWNS that directory and a running plane can never
+	// join this account's group. See macagent.WorkerSocketName.
+	dir, err := os.Getwd()
 	if err != nil {
-		return err
+		return fmt.Errorf("this worker cannot read its own working directory, so it has nowhere to listen: %w", err)
 	}
+	socket := macagent.WorkerSocketIn(dir)
 
 	// A socket left by a previous worker is a node nothing is listening on, and bind fails on it. It is
 	// inside this account's own home, so removing it takes nothing from anybody else.

@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -26,9 +27,9 @@ type sessionWorker struct {
 	Path string
 	// UID and GID are the account's, from macagent.AccountUID and macagent.SlotGID.
 	UID, GID int
-	// Dir is the account's home. A worker started in the daemon's own working directory would create
-	// its scratch files wherever launchd left root, which is both a residue and a confusion about who
-	// owns what.
+	// Dir is the SLOT DIRECTORY: the directory the control plane opens this slot's allocations in, and
+	// the one place both principals can reach — the plane by ownership, the worker by its group. It is
+	// also where the worker binds its socket.
 	Dir string
 	// Env is the complete environment, built rather than inherited. See workerEnv.
 	Env []string
@@ -142,11 +143,20 @@ func (a *SysadminctlAccounts) Spawn(ctx context.Context, slot int) (string, int,
 		return name, 0, nil
 	}
 
+	// ‼️ THE WORKER STARTS IN THE SLOT DIRECTORY AND NOT IN THE ACCOUNT'S HOME, because that is where its
+	// socket has to live: the control plane OWNS the slot directory and reaches it by ownership, which no
+	// group list can take away, while a running plane can never join the account's own group. See
+	// macagent.WorkerSocketName for the measurement.
+	if a.allocationRoot == "" {
+		return "", 0, macagent.Errorf(macagent.ClassUnsupported,
+			"this daemon was installed with no allocation root, so a session worker has nowhere to listen — reinstall it with -allocation-root")
+	}
+	slotDir := filepath.Join(a.allocationRoot, SlotDirName(slot))
 	pid, err := a.spawn(ctx, sessionWorker{
 		Path: a.workerPath,
 		UID:  uid,
 		GID:  gid,
-		Dir:  home,
+		Dir:  slotDir,
 		Env:  workerEnv(home),
 	})
 	if err != nil {
@@ -229,10 +239,10 @@ func startWorker(_ context.Context, w sessionWorker) (int, error) {
 // listener exists, which is precisely the claim this needs — unlike a probe of the daemon itself, where
 // the tree insists on a round trip, the question here is only "would a second worker collide".
 func (a *SysadminctlAccounts) workerAnswering(slot int) (bool, error) {
-	socket, err := macagent.WorkerSocket(slot)
-	if err != nil {
-		return false, err
+	if a.allocationRoot == "" {
+		return false, fmt.Errorf("this daemon has no allocation root, so a slot has no directory to hold a worker socket")
 	}
+	socket := macagent.WorkerSocketIn(filepath.Join(a.allocationRoot, SlotDirName(slot)))
 	conn, err := net.DialTimeout("unix", socket, workerDialProbe)
 	if err != nil {
 		return false, nil

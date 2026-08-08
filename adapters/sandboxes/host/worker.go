@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -42,14 +43,14 @@ var dialWorker = func(socket string) (net.Conn, error) {
 // the far side would be a second place those rules are written, and this tree has measured what happens
 // when two copies of one rule disagree.
 func (e *Executor) runThroughWorker(ctx context.Context, cmd toolbroker.ShellCommand, runArgv []string, dropErr error) (toolbroker.ShellResult, error) {
-	slot, ok := macagent.SlotFromUID(cmd.RunAs.UID)
-	if !ok {
+	if _, ok := macagent.SlotFromUID(cmd.RunAs.UID); !ok {
 		return toolbroker.ShellResult{}, dropErr
 	}
-	socket, err := macagent.WorkerSocket(slot)
-	if err != nil {
-		return toolbroker.ShellResult{}, dropErr
-	}
+	// The slot directory is the allocation's parent: the control plane lays allocations out at
+	// <root>/slot-NN/<alloc>, and the worker listens in the slot directory because that is the one place
+	// this process reaches by OWNERSHIP rather than by a group it cannot join. See
+	// macagent.WorkerSocketName for the night that established it.
+	socket := macagent.WorkerSocketIn(filepath.Dir(cmd.WorkspaceRoot))
 
 	env, err := allowedEnv(cmd.WorkspaceRoot, cmd.RunAs)
 	if err != nil {

@@ -11,10 +11,16 @@ import (
 )
 
 // slotRootMode is what one slot's directory is left as: the control plane that CREATED it keeps it, the
-// slot's own group may TRAVERSE, and nobody else has anything at all. The `1` that used to sit in the
+// slot's own group may READ AND WRITE, and nobody else has anything at all.
+//
+// ‼️ THE GROUP NEEDS w, AND THAT IS THE SOCKET. The session worker binds macagent.WorkerSocketName in
+// this directory — it has to be here, because the plane reaches it by OWNERSHIP and can never join the
+// account's group (a process's groups are fixed at exec). Binding is a write, so 0710 produced a worker
+// that could not listen. Everything under this directory belongs to the one session holding the slot,
+// so there is nothing here the group may see that is not already its own. The `1` that used to sit in the
 // last position was world-traversable, which on a Mac holding two tenants means tenant B can walk into
 // tenant A's slot and reach any path it can guess; the per-slot group makes 0 expressible there.
-const slotRootMode = 0o710
+const slotRootMode = 0o770
 
 // SlotDirName is the directory one slot's allocations live in, under the allocation root. It is
 // derived from the integer on BOTH sides — the control plane places allocations here and the daemon

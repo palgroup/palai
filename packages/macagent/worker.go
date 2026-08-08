@@ -5,25 +5,36 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"path/filepath"
 	"time"
 )
 
-// WorkerSocket is where slot N's session worker listens, and it is DERIVED FROM THE SLOT on both sides
-// exactly the way an account name is: the worker binds it from its own uid, the control plane joins it
-// from the slot it was given, and neither tells the other a path.
+// WorkerSocketName is the socket file a session worker binds inside its slot's ALLOCATION directory,
+// and the directory is what makes the permission argument work.
 //
-// ‼️ IT IS INSIDE THE ACCOUNT'S HOME, WHICH IS WHAT MAKES THE PERMISSION ARGUMENT SHORT. The home is
-// owned by the session account and its group is that slot's own group — the one the control plane is
-// also a member of (see [SlotGroupName]) — so the two principals that must reach this socket are exactly
-// the two the directory admits, and no third account on the machine can even traverse into it. A socket
-// in a shared directory would have needed a rule about who may connect; this one needs none, because the
-// filesystem already says it.
-func WorkerSocket(slot int) (string, error) {
-	home, err := HomeDir(slot)
-	if err != nil {
-		return "", err
-	}
-	return home + "/.palai-session.sock", nil
+// ‼️ IT IS NOT IN THE ACCOUNT'S HOME, AND THE REASON WAS MEASURED ON DARWIN 25.3.0 ON 2026-08-08. It was
+// there first, reachable by the control plane through the slot's own group — and a running control
+// plane can never join that group. A process's supplementary groups are fixed when it EXECS; adding a
+// user to a group afterwards changes what a NEW login sees and nothing about a process already running.
+// `id -Gn` in a fresh shell listed palai-s01-grp while the control plane serving that very session did
+// not hold it, so every dial into the home answered EACCES and the engine hung at its `before_tool`
+// boundary with the run reported as failed.
+//
+// AND RESTARTING THE PLANE WOULD NOT HAVE FIXED IT EITHER, which is the part that makes this structural
+// rather than an ordering bug: a session account is created WHILE the plane runs, so its group is always
+// newer than the process that must reach it.
+//
+// The allocation directory has neither problem. The control plane CREATED it, so it reaches it by
+// OWNERSHIP — a fact no group list can take away — and palai-agentd's adopt puts it in the slot's group
+// at 0770, which is what lets the worker bind here at all. Owner and group, each doing the half the
+// other cannot.
+const WorkerSocketName = ".palai-session.sock"
+
+// WorkerSocketIn joins the socket name onto one allocation directory. Both ends derive it: the worker
+// from the directory it was started in, the control plane from the allocation it is dispatching for, so
+// neither tells the other a path.
+func WorkerSocketIn(allocationDir string) string {
+	return filepath.Join(allocationDir, WorkerSocketName)
 }
 
 // WorkerRequest is one command for a session worker to run AS ITSELF.
