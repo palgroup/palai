@@ -163,6 +163,22 @@ func (a *SysadminctlAccounts) Spawn(ctx context.Context, slot int) (string, int,
 	// so whichever runs first is enough and the second is a no-op. The owner is deliberately NOT set: the
 	// control plane created this directory and reaches it by ownership, which is the half no group list
 	// can take away.
+	// ‼️ AND THE PATH TO IT MUST BE WALKABLE BY THE ACCOUNT, WHICH IS NOT A PROPERTY OF THIS DIRECTORY AT
+	// ALL. Measured on a real Mac on 2026-08-08:
+	//
+	//	drwxr-x---  salih:staff  /Users/salih
+	//	drwxrwx---  salih:palai-s02-grp  /Users/salih/palai-work/slot-02
+	//
+	// The slot directory was perfect and the session could not reach it, because the allocation root sat
+	// inside the OPERATOR'S HOME and a session account is deliberately not in `staff` — putting it there
+	// is the defect this whole namespace exists to avoid, since `staff` reads every project under that
+	// home. So the account cannot traverse `/Users/salih`, and `fork/exec` answers `permission denied`
+	// naming the worker binary, which is present, executable and world-readable.
+	//
+	// The refusal is here rather than in a doc because the failure it prevents names the wrong file.
+	if err := requireWalkable(a.allocationRoot); err != nil {
+		return "", 0, err
+	}
 	if err := os.MkdirAll(slotDir, slotRootMode); err != nil {
 		return "", 0, macagent.Errorf(macagent.ClassInternal, "create %s: %v", slotDir, err)
 	}
@@ -276,3 +292,37 @@ func (a *SysadminctlAccounts) workerAnswering(slot int) (bool, error) {
 // workerDialProbe bounds the collision check. It is short because the socket is on this machine's own
 // filesystem: anything slower than this is not a worker that is busy, it is one that is gone.
 const workerDialProbe = 500 * time.Millisecond
+
+// requireWalkable refuses an allocation root a session account could never reach.
+//
+// EVERY ANCESTOR MUST BE WORLD-TRAVERSABLE, and the reason it is `other` rather than a group is that
+// these directories are SHARED by every slot: a group that admitted one slot would have to admit all of
+// them, which is the fleet-wide group this daemon deleted. x-without-r is what makes that safe — a
+// session can walk THROUGH /Users/salih/palai-work and cannot list it.
+func requireWalkable(root string) error {
+	for dir := filepath.Clean(root); ; dir = filepath.Dir(dir) {
+		fi, err := os.Stat(dir)
+		if err != nil {
+			// A missing ancestor is not this check's business: MkdirAll below reports it, and reporting it
+			// twice in two vocabularies is how an operator ends up fixing the wrong thing.
+			if os.IsNotExist(err) {
+				if parent := filepath.Dir(dir); parent != dir {
+					continue
+				}
+			}
+			return macagent.Errorf(macagent.ClassInternal, "reading %s: %v", dir, err)
+		}
+		if fi.Mode().Perm()&0o001 == 0 {
+			return macagent.Errorf(macagent.ClassRefused,
+				"%s is mode %04o, so a session account cannot walk through it to reach %s — every directory on the "+
+					"way to the allocation root must be traversable by others (x, and r is not needed). This is "+
+					"usually an allocation root inside the operator's home: a session account is deliberately not in "+
+					"`staff`, because an account that were could read every project under that home. Move the "+
+					"workspace root somewhere outside it, e.g. /Users/Shared/palai-work",
+				dir, fi.Mode().Perm(), root)
+		}
+		if parent := filepath.Dir(dir); parent == dir {
+			return nil
+		}
+	}
+}

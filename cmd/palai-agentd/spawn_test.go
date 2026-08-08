@@ -56,7 +56,7 @@ func ourRecord(slot int) *recordingRun {
 func newSpawnAccounts(t *testing.T, rec *recordingRun, spy *spawnSpy) *SysadminctlAccounts {
 	t.Helper()
 	accounts := newTestAccounts(t, rec)
-	accounts.allocationRoot = t.TempDir()
+	accounts.allocationRoot = walkableRoot(t)
 	accounts.spawn = spy.spawn
 	accounts.workerPath = writeWorker(t, 0o755)
 	return accounts
@@ -259,7 +259,7 @@ func TestSpawnRefusesEveryAccountItDidNotCreate(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			spy := &spawnSpy{}
 			accounts := newTestAccounts(t, tc.rec)
-			accounts.allocationRoot = t.TempDir()
+			accounts.allocationRoot = walkableRoot(t)
 			accounts.spawn = spy.spawn
 			accounts.workerPath = writeWorker(t, tc.worker)
 
@@ -302,7 +302,7 @@ func TestSpawnRefusesEveryAccountItDidNotCreate(t *testing.T) {
 func TestSpawnRefusesAWorkerBinaryThatIsNotThere(t *testing.T) {
 	spy := &spawnSpy{}
 	accounts := newTestAccounts(t, ourRecord(7))
-	accounts.allocationRoot = t.TempDir()
+	accounts.allocationRoot = walkableRoot(t)
 	accounts.spawn = spy.spawn
 	accounts.workerPath = filepath.Join(t.TempDir(), "absent")
 
@@ -427,7 +427,7 @@ func TestSpawnPreparesTheSlotDirectoryItStartsTheWorkerIn(t *testing.T) {
 	const slot = 7
 	rec := ourRecord(slot)
 	accounts := newTestAccounts(t, rec)
-	accounts.allocationRoot = t.TempDir()
+	accounts.allocationRoot = walkableRoot(t)
 
 	var gave []string
 	accounts.chown = func(path string, uid, gid int) error {
@@ -468,5 +468,63 @@ func TestSpawnPreparesTheSlotDirectoryItStartsTheWorkerIn(t *testing.T) {
 	}
 	if started.Dir != slotDir {
 		t.Errorf("the worker was started in %q, want the slot directory %q", started.Dir, slotDir)
+	}
+}
+
+// walkableRoot is an allocation root a session account could actually reach: every directory on the way
+// to it is traversable by others. t.TempDir() is 0700 by design, which is precisely what requireWalkable
+// refuses — so a fixture using it would be testing the guard rather than the spawn.
+func walkableRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "palai-alloc")
+	if err != nil {
+		t.Fatalf("allocation root: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatalf("open %s: %v", dir, err)
+	}
+	return dir
+}
+
+// TestAnAllocationRootTheAccountCannotWALKTOIsRefused — THE DIRECTORY WAS PERFECT AND THE SESSION COULD
+// NOT REACH IT.
+//
+// Measured on a real Mac on 2026-08-08:
+//
+//	drwxr-x---  salih:staff          /Users/salih
+//	drwxrwx---  salih:palai-s02-grp  /Users/salih/palai-work/slot-02
+//
+// The allocation root sat inside the OPERATOR'S HOME, and a session account is deliberately not in
+// `staff` — an account that were would read every project under that home, which is the defect this
+// namespace exists to avoid. So it could not traverse /Users/salih, and fork/exec answered `permission
+// denied` NAMING THE WORKER BINARY, which was present, executable and world-readable. An operator
+// reading that has no path from it to the actual cause.
+func TestAnAllocationRootTheAccountCannotWALKTOIsRefused(t *testing.T) {
+	closed := t.TempDir() // 0700, exactly like an operator's home
+	root := filepath.Join(closed, "palai-work")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	accounts := newTestAccounts(t, ourRecord(7))
+	accounts.allocationRoot = root
+	worker := filepath.Join(walkableRoot(t), "palai-session-worker")
+	if err := os.WriteFile(worker, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	accounts.workerPath = worker
+	accounts.spawn = func(context.Context, sessionWorker) (int, error) {
+		t.Error("a worker was started into a directory its account cannot reach")
+		return 0, nil
+	}
+
+	_, _, err := accounts.Spawn(context.Background(), 7)
+	if err == nil {
+		t.Fatal("an allocation root behind a 0700 ancestor was accepted; the failure would arrive as " +
+			"`fork/exec … permission denied` naming a binary that is perfectly fine")
+	}
+	if !strings.Contains(err.Error(), closed) {
+		t.Errorf("the refusal is %q, want one naming the directory that is actually closed (%s)", err, closed)
 	}
 }
