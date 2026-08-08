@@ -32,6 +32,32 @@ export class Artifacts {
     this.#client = client;
   }
 
+  /**
+   * create uploads bytes and returns the artifact whose id a run's `image_ref` content item names.
+   *
+   * ‼️ THIS IS HOW A SCREENSHOT REACHES A MODEL, and its absence was the gap: the Go SDK has had this
+   * since E09 and the TypeScript one did not, so a browser app — the only kind that has a file picker —
+   * could download artifacts and never send one. The demo's chat could show what the agent produced and
+   * not what the operator was looking at.
+   *
+   * NO MEDIA TYPE IS SENT, deliberately. The server sniffs the bytes (http.DetectContentType) and
+   * refuses anything outside its allow-list, so a caller-declared type would be a claim the server
+   * ignores — a lie in a function signature. A caller who knows what it is holding still learns what the
+   * server decided, from the `media_type` on the artifact that comes back.
+   */
+  async create(content: Uint8Array, options: CallOptions = {}): Promise<Artifact> {
+    if (content.byteLength === 0) {
+      // Refused before the round trip: the server answers 400 for an empty body, and paying a request to
+      // be told what the caller already knows is a request nobody needed.
+      throw new TypeError("artifacts.create: the content carried no bytes");
+    }
+    const result = await this.#client.request<Artifact>("POST", "/v1/artifacts", {
+      ...callArgs(options),
+      bytes: content,
+    });
+    return result.body;
+  }
+
   // retrieve returns an artifact's metadata; a foreign/unknown id is a 404.
   async retrieve(artifactID: string, options: CallOptions = {}): Promise<Artifact> {
     const result = await this.#client.request<Artifact>("GET", `/v1/artifacts/${enc(artifactID)}`, callArgs(options));

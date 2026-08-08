@@ -36,6 +36,12 @@ export interface PalaiOptions {
 
 export interface RequestOptions {
   body?: unknown;
+  /**
+   * bytes is a RAW body, for the one endpoint that takes an object rather than JSON
+   * (`POST /v1/artifacts`). It is mutually exclusive with `body` and wins when both are set, because a
+   * request that carried both would be one whose Content-Type contradicts its payload.
+   */
+  bytes?: Uint8Array;
   idempotencyKey?: string;
   signal?: AbortSignal | undefined;
   maxRetries?: number;
@@ -132,8 +138,14 @@ export class Palai implements StreamTransport {
     if (options.idempotencyKey !== undefined) {
       headers["Idempotency-Key"] = options.idempotencyKey;
     }
-    let bodyText: string | undefined;
-    if (options.body !== undefined) {
+    let bodyText: string | Uint8Array | undefined;
+    if (options.bytes !== undefined) {
+      // ‼️ RAW BYTES, AND THE CONTENT TYPE IS THE SERVER'S TO DECIDE. POST /v1/artifacts takes the object
+      // itself as the body and SNIFFS its media type (http.DetectContentType), refusing anything outside
+      // its allow-list. A client-declared type would be a claim the server ignores — a lie in a function
+      // signature — so none is sent.
+      bodyText = options.bytes;
+    } else if (options.body !== undefined) {
       bodyText = JSON.stringify(options.body);
       headers["Content-Type"] = "application/json";
     }

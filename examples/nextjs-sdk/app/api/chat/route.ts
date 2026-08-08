@@ -32,6 +32,9 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
+  const images = Array.isArray(body.imageArtifactIds)
+    ? body.imageArtifactIds.filter((id): id is string => typeof id === "string" && id !== "")
+    : [];
   if (prompt === "") {
     return problem(400, "invalid_request", "prompt is required");
   }
@@ -88,7 +91,7 @@ export async function POST(request: Request): Promise<Response> {
         });
 
         const created = await client.responses.create({
-          input: prompt,
+          input: turnInput(prompt, images),
           session_id: sessionId,
           // THE STEERING RIDES THE AGENT, NOT THE REQUEST, AND NOT THE OPERATOR'S TEXT.
           //
@@ -852,6 +855,12 @@ interface ChatRequest {
   sessionId?: unknown;
   agentId?: string;
   bindingId?: string;
+  /**
+   * imageArtifactIds are screenshots the operator attached, already uploaded through
+   * `POST /api/palai/images` and named here by id. Ids and never bytes: the upload is a separate,
+   * idempotent round trip, so a retried turn re-sends a reference rather than re-uploading a megabyte.
+   */
+  imageArtifactIds?: unknown;
 }
 
 function problem(status: number, code: string, detail: string): Response {
@@ -859,4 +868,26 @@ function problem(status: number, code: string, detail: string): Response {
     status,
     headers: { "Content-Type": "application/problem+json; charset=utf-8", "Cache-Control": "no-store" },
   });
+}
+
+/**
+ * turnInput is the one place a turn's input is shaped, and it stays a bare STRING when there are no
+ * images.
+ *
+ * ‼️ THE STRING FORM IS NOT LEGACY. It is what every turn in this example has always sent and what the
+ * response API's own examples use; switching everything to a content-item array "for consistency" would
+ * change the shape of every existing turn to buy nothing. A screenshot is the case that needs the array,
+ * so the array appears exactly there.
+ *
+ * The text comes FIRST because it is the instruction and the images are its subject: a model reading
+ * "what is wrong with this screen?" after the picture has the question in hand when it looks.
+ */
+function turnInput(prompt: string, imageArtifactIds: string[]): unknown {
+  if (imageArtifactIds.length === 0) {
+    return prompt;
+  }
+  return [
+    { type: "input_text", text: prompt },
+    ...imageArtifactIds.map((id) => ({ type: "image_ref", artifact_id: id })),
+  ];
 }
