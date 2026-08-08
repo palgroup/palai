@@ -34,6 +34,11 @@ func (o *Orchestrator) SetWorkspaceProvisioner(root string, broker repositories.
 // root decides, and every existing caller compiles and behaves unchanged.
 func (o *Orchestrator) SetSessionAccounts(a SessionAccounts) { o.sessionAccounts = a }
 
+// SetIdleNudge wires the hint the orchestrator gives the idle sweep when an attempt finishes with a
+// workspace. Nil is a deployment with no releaser — the sweep's own ticker is then the only trigger,
+// which is the behaviour every stack had before this existed.
+func (o *Orchestrator) SetIdleNudge(nudge func()) { o.idleNudge = nudge }
+
 // SetConnectionSecrets wires the resolver a binding's connection_ref is redeemed through (E13 Task 9),
 // so a tenant's own Git credential — provisioned and rotated over the secret-ref API — backs the clone
 // for the bindings that name one. main.go calls it unconditionally next to SetWorkspaceProvisioner: any
@@ -624,6 +629,17 @@ func (o *Orchestrator) releaseWorkspace(tenant coordinator.Tenant, workspaceID, 
 	}
 	if err := o.spine.AdvanceWorkspace(ctx, tenant, workspaceID, statemachines.WorkspaceCmdRelease); err != nil {
 		log.Printf("release workspace %s: %v", workspaceID, err)
+	}
+	// ‼️ AND TELL THE SWEEP, because THIS is the moment its precondition can newly be true: the workspace
+	// is back to `ready` and this attempt is done with it. Waiting for the next tick is latency nobody
+	// chose, on top of the TTL somebody did. The nudge is a hint — IdleReleaser.Sweep re-asks the whole
+	// question in SQL — so an early arrival can only ever find nothing.
+	// ‼️ AND TELL THE SWEEP, because THIS is the moment its precondition can newly be true: the workspace
+	// is back to `ready` and this attempt is done with it. Waiting for the next tick is latency nobody
+	// chose, on top of the TTL somebody did. The nudge is a hint — IdleReleaser.Sweep re-asks the whole
+	// question in SQL — so an early arrival can only ever find nothing.
+	if o.idleNudge != nil {
+		o.idleNudge()
 	}
 }
 

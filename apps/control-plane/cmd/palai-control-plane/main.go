@@ -434,14 +434,18 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	startDispatch(ctx, repo, gateway, supervisor, artStore, slackSearchAuthorities, sessionAccounts)
+	// ‼️ THE RELEASER STARTS BEFORE THE DISPATCHER, and the order is the wiring. startIdleRelease returns
+	// the hint an attempt gives when it finishes with a workspace; starting the dispatcher first would
+	// mean threading a nil and filling it in later, which is a data race on the one value that decides
+	// whether a quiet session is noticed now or at the next tick.
+	idleNudge := startIdleRelease(ctx, repo, supervisor, artStore, sessionAccounts)
+	startDispatch(ctx, repo, gateway, supervisor, artStore, slackSearchAuthorities, sessionAccounts, idleNudge)
 	startWebhookPump(ctx, webhookStore, supervisor)
 	startQueueBridges(ctx, queueStore, repo.Spine(), edge, supervisor)
 	startDeliveryReconciler(ctx, triggerStore, supervisor)
 	startScheduleTicker(ctx, scheduleStore, supervisor)
 	startRetention(ctx, repo, supervisor, artStore)
 	startOrphanGC(ctx, repo, supervisor, artStore)
-	startIdleRelease(ctx, repo, supervisor, artStore, sessionAccounts)
 	startLeaseReclaim(ctx, repo, supervisor)
 
 	log.Printf("palai control-plane listening on %s", addr)
@@ -579,7 +583,7 @@ func dispatchPosture(workers int, gatewayBound bool) (start bool, refusal string
 	}
 }
 
-func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.RunnerGateway, supervisor *coordinator.Supervisor, artStore *artifacts.Store, slackSearchAuthorities *tools.SearchAuthorities, sessionAccounts *execution.SlotAccounts) {
+func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.RunnerGateway, supervisor *coordinator.Supervisor, artStore *artifacts.Store, slackSearchAuthorities *tools.SearchAuthorities, sessionAccounts *execution.SlotAccounts, idleNudge func()) {
 	workers := dispatchWorkerCount()
 	switch start, refusal := dispatchPosture(workers, gateway != nil); {
 	case start:
@@ -753,6 +757,10 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 			// PER-SESSION ACCOUNTS (macOS), ACQUIRE HALF: the uid a session's tools run under, created when the
 			// session first provisions a workspace. It is the SAME INSTANCE the release half holds — they share the
 			// map of which session owns which slot, and two instances would give the releaser an empty one.
+			// The idle sweep's hint. Set beside the accounts because the two are the same product
+			// sentence from opposite ends: the accounts are what a quiet session gives back, and this is
+			// what makes "quiet" observed rather than waited for.
+			orch.SetIdleNudge(idleNudge)
 			if sessionAccounts != nil {
 				orch.SetSessionAccounts(sessionAccounts)
 			}
@@ -1694,13 +1702,13 @@ func daemonSessionAccounts(ctx context.Context, socket string) *execution.SlotAc
 	return execution.NewDaemonSessionAccounts(socket)
 }
 
-func startIdleRelease(ctx context.Context, repo *store.Store, supervisor *coordinator.Supervisor, artStore *artifacts.Store, sessionAccounts *execution.SlotAccounts) {
+func startIdleRelease(ctx context.Context, repo *store.Store, supervisor *coordinator.Supervisor, artStore *artifacts.Store, sessionAccounts *execution.SlotAccounts) func() {
 	if os.Getenv("PALAI_WORKSPACE_ROOT") == "" {
-		return // no workspaces provisioned here, so no machine to hand back
+		return nil // no workspaces provisioned here, so no machine to hand back
 	}
 	if artStore == nil {
 		log.Printf("workspace idle release DISABLED: no object store is configured, and releasing a workspace whose bytes were never archived would delete a session's uncommitted work")
-		return
+		return nil
 	}
 	ttl := envDurationOr("PALAI_WORKSPACE_IDLE_TTL", execution.DefaultIdleWorkspaceTTL)
 	releaser := execution.NewIdleReleaser(repo.Spine(), execution.NewSnapshotSink(artStore, repo.Spine()), ttl)
@@ -1712,6 +1720,9 @@ func startIdleRelease(ctx context.Context, repo *store.Store, supervisor *coordi
 	}
 	log.Printf("workspace idle release enabled: a session's machine is handed back after %s idle, and restored from its archive on the next message", ttl)
 	go supervisor.Supervise(ctx, "workspace-idle-release", func(ctx context.Context) error { return releaser.Run(ctx, 30*time.Second) })
+	// The hint the dispatcher gives when an attempt finishes with a workspace. Returned rather than
+	// stored, so the one caller that needs it is handed it and nothing else can reach it.
+	return releaser.Nudge
 }
 
 // startLeaseReclaim launches the abandoned-writer-lease sweep, which returns a workspace whose holder run

@@ -69,6 +69,13 @@ type IdleReleaser struct {
 	// remover to drive the leaked-bytes path. One function field, not an interface — there is exactly one
 	// real implementation, the same call WorkspaceRecovery makes.
 	remove func(string) error
+	// wake carries a Nudge: an attempt has finished with a workspace, so the sweep's precondition may
+	// have just become true. Buffered to one — see Nudge for why a full buffer is the right answer.
+	wake chan struct{}
+	// sweep is Sweep in production. It is a field ONLY so the loop above can be driven without a spine:
+	// what Run owes its caller is "a nudge causes a pass", and proving that against a real database
+	// would measure Postgres rather than the mechanism.
+	sweep func(context.Context) (int, error)
 	// accounts releases the uid the allocation's tools ran under. Nil means the deployment mints none,
 	// which is what every non-macOS deployment does.
 	accounts SessionAccounts
@@ -82,7 +89,7 @@ type IdleReleaser struct {
 // must not construct this at all — main.go's startIdleRelease says so and refuses — and a nil sink here
 // makes every sweep refuse rather than delete.
 func NewIdleReleaser(spine *coordinator.Store, snapshots *SnapshotSink, ttl time.Duration) *IdleReleaser {
-	return &IdleReleaser{spine: spine, snapshots: snapshots, ttl: ttl, remove: os.RemoveAll}
+	return &IdleReleaser{spine: spine, snapshots: snapshots, ttl: ttl, remove: os.RemoveAll, wake: make(chan struct{}, 1)}
 }
 
 // WithSessionAccounts wires the macOS session-account release, so an idle workspace hands back its uid
@@ -559,9 +566,42 @@ func (r *IdleReleaser) Run(ctx context.Context, interval time.Duration) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			if released, err := r.Sweep(ctx); err != nil {
+			if released, err := r.sweepNow(ctx); err != nil {
 				log.Printf("workspace idle release sweep failed after releasing %d: %v", released, err)
 			}
+		case <-r.wake:
+			// ‼️ A NUDGE IS A HINT AND NEVER A DECISION. Sweep re-asks the same question it always asks —
+			// IdleWorkspacesForRelease proves the workspace is `ready`, holds no active writer lease, has
+			// no RUNNING response.run job for any run in its session, and has been quiet for the TTL — so
+			// arriving early can only find nothing. That is what makes it safe to be woken by anything.
+			if released, err := r.sweepNow(ctx); err != nil {
+				log.Printf("workspace idle release sweep (woken) failed after releasing %d: %v", released, err)
+			}
 		}
+	}
+}
+
+// Nudge asks for a sweep now rather than at the next tick.
+//
+// ‼️ IT EXISTS BECAUSE A TIMER IS THE WRONG SHAPE FOR THIS EVENT. The product sentence is "when the
+// agent stops and nothing is running, the machine goes back" — and the moment that becomes true is
+// knowable exactly: it is when an attempt finishes with a workspace and drives it to `ready`. Waiting up
+// to a full tick after that is latency nobody chose, on top of the TTL somebody did.
+//
+// NON-BLOCKING BY CONSTRUCTION. The channel is buffered to one and a full buffer means a sweep is
+// already pending, so a burst of finishing attempts collapses into a single pass rather than queueing
+// one per run. A caller must never be slowed down by having told us.
+// sweepNow is the one call site of the sweep seam, so production and the loop cannot diverge.
+func (r *IdleReleaser) sweepNow(ctx context.Context) (int, error) {
+	if r.sweep != nil {
+		return r.sweep(ctx)
+	}
+	return r.Sweep(ctx)
+}
+
+func (r *IdleReleaser) Nudge() {
+	select {
+	case r.wake <- struct{}{}:
+	default:
 	}
 }

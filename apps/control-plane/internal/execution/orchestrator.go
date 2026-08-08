@@ -118,6 +118,9 @@ type Orchestrator struct {
 	// sessionAccounts mints the uid an allocation's tools run under (macOS). Nil means none, which is
 	// every deployment that has not opted in.
 	sessionAccounts SessionAccounts
+	// idleNudge tells the idle sweep that an attempt has just finished with a workspace, so its
+	// precondition may have newly become true. A hint and never a decision — see releaseWorkspace.
+	idleNudge       func()
 	provisionBroker repositories.Broker
 	// provisionSecrets resolves a binding's connection_ref to that tenant's OWN Git credential (E13 Task
 	// 9). Nil ⇒ no secret-ref store wired: every binding clones under provisionBroker, as before. main.go
