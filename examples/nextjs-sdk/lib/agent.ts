@@ -91,6 +91,14 @@ export const AGENT_NAME = "ios-coder";
 // wrong one. xcodebuild has no `-C`, so it has to run from inside the clone — `cd` works in this
 // shell, which was measured separately.
 //
+// ‼️ AND THE SCHEME NAME IS NO LONGER IN THIS FILE, which supersedes the instruction the paragraph
+// above fixed without changing what it measured. `PalaiDemo` was true of one repository; the agent is
+// pointed at whatever the binding names, and on the first real one — a private project whose scheme is
+// neither its directory name nor its product name — a hardcoded scheme fails with a message that reads
+// like a broken checkout. The instruction asks the project instead (`xcodebuild -list`), which is
+// correct for every repository including that one. It also keeps a private project's internals out of
+// this file, which ships in a public tree.
+//
 // THE LAST CLAUSE IS THE OWNER'S FIRST COMPLAINT, AND IT TOOK TWO ROUNDS TO FIND ITS REAL CAUSE.
 // They said: "bir sürü tool eventi geldi, sebeplerini anlamadım." Moving the hint off their message
 // took turn one from FIVE tool calls to zero — but UAT measured turn two, "naber", still running two:
@@ -111,10 +119,13 @@ export const AGENT_INSTRUCTIONS =
   "The repository is cloned at ./repo and shell commands start in the workspace root ABOVE it. " +
   "For the file tool, use paths beginning with `repo/`. For git, use `git -C repo …` and then give " +
   "paths RELATIVE TO the clone (`git -C repo add CONTRIBUTING.md`, not `repo/CONTRIBUTING.md`). " +
-  "This is an iOS package. To build or test it FOR iOS, run xcodebuild from inside the clone against " +
-  "a Simulator destination — `cd` works in this shell:\n" +
-  "  bash -c \"cd repo && xcodebuild -scheme PalaiDemo -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build\"\n" +
-  "  bash -c \"cd repo && xcodebuild -scheme PalaiDemo -destination 'platform=iOS Simulator,name=iPhone 17 Pro' test\"\n" +
+  "This is an iOS project. THE SCHEME IS NOT SOMETHING YOU KNOW — ASK THE PROJECT. Repositories differ, " +
+  "the scheme is rarely the directory name, and a guessed one fails with a message that reads like a " +
+  "broken checkout. Run this first and use what it prints:\n" +
+  "  bash -c \"cd repo && xcodebuild -list\"\n" +
+  "Then build or test against a Simulator destination — `cd` works in this shell:\n" +
+  "  bash -c \"cd repo && xcodebuild -scheme <scheme> -destination 'platform=iOS Simulator,name=<device>' build\"\n" +
+  "  bash -c \"cd repo && xcodebuild -scheme <scheme> -destination 'platform=iOS Simulator,name=<device>' test\"\n" +
   "Use `xcrun simctl list devices available` to see the destinations that exist before naming one. " +
   "`swift build --package-path repo` also works but it builds for macOS, NOT for iOS, so do not use it " +
   "when the request is about the iOS app — and say which of the two you ran. " +
