@@ -206,3 +206,36 @@ func macagentSelectors(t *testing.T, dirs ...string) (map[string]bool, bool) {
 	}
 	return found, any
 }
+
+// TestTheSERVINGFormAcceptsItsOwnFlags — THE REFUSAL KILLED THE ENROLLED AGENT.
+//
+// `palai <unknown>` must refuse rather than fall through to the serving loop; that shipped on
+// 2026-08-08 and it read os.Args[1] as a VERB. The LaunchAgent `palai enroll` writes invokes
+//
+//	/usr/local/bin/palai --config /Users/<u>/Library/Application Support/Palai/agent.json
+//
+// so the product's own service invocation became "unknown command", and every machine that took the
+// update printed usage and exited. Measured in the agent's own log on this Mac the same day.
+//
+// A LEADING DASH IS THE SERVING FORM. Flags belong to `palai`; words belong to a subcommand; only the
+// words can be wrong. This asserts the source draws that line, because the alternative — driving main()
+// — would start a daemon inside the test suite.
+func TestTheSERVINGFormAcceptsItsOwnFlags(t *testing.T) {
+	body, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(body)
+	if !strings.Contains(src, `!strings.HasPrefix(os.Args[1], "-")`) {
+		t.Error("the unknown-command refusal does not exempt flags: the shipped LaunchAgent passes " +
+			"`--config <path>`, so every enrolled machine that takes this build prints usage and exits " +
+			"instead of serving")
+	}
+	// AND THE PLIST IS THE OTHER HALF. If enrolment stopped passing --config this guard would still pass
+	// while describing a contract nobody has; anchor on the writer.
+	plist, err := os.ReadFile(filepath.Join("..", "..", "packages", "device", "service.go"))
+	if err == nil && !strings.Contains(string(plist), "--config") {
+		t.Error("packages/device no longer writes --config into the service definition; this guard is " +
+			"protecting a shape that is gone")
+	}
+}

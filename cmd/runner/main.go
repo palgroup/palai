@@ -87,7 +87,19 @@ func main() {
 	// and sat there. On a device that is a typo turning into a long-running process nobody meant to
 	// launch, and on a terminal it reads as a hang. The bare form — no arguments at all — is still the
 	// serving one, because that is what launchd invokes.
-	if len(os.Args) > 1 {
+	// ‼️ THE SERVING FORM HAS FLAGS, AND FORGETTING THAT KILLED THE ENROLLED AGENT. This refusal shipped
+	// reading `os.Args[1]` as a VERB, and the shipped LaunchAgent's own ProgramArguments are
+	//
+	//	/usr/local/bin/palai --config /Users/<u>/Library/Application Support/Palai/agent.json
+	//
+	// — so the very invocation `palai enroll` writes became "unknown command", and the agent printed its
+	// usage and exited on every machine that took the update. Measured on this Mac on 2026-08-08, in the
+	// agent's own log.
+	//
+	// A LEADING DASH IS THE SERVING FORM, and anything else is a verb that does not exist. That is the
+	// distinction the first version collapsed: flags belong to `palai`, words belong to a subcommand, and
+	// only the words can be wrong here.
+	if len(os.Args) > 1 && !strings.HasPrefix(os.Args[1], "-") {
 		fmt.Fprintf(os.Stderr, "palai: unknown command %q\n\n", os.Args[1])
 		fmt.Fprint(os.Stderr, deviceUsage)
 		os.Exit(2)
