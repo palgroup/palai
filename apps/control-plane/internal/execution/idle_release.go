@@ -244,6 +244,30 @@ func (r *IdleReleaser) release(ctx context.Context, c coordinator.IdleWorkspace)
 		return false, r.returnClaim(tenant, c.WorkspaceID)
 	}
 
+	// ‼️ AN ALLOCATION WHOSE DIRECTORY IS GONE CANNOT BE ARCHIVED, AND RETRYING IT FOREVER IS A POISON
+	// PILL. Measured on the running stack on 2026-08-08: four workspaces named directories that no longer
+	// existed — a moved workspace root, an operator's cleanup — and every pass answered
+	//
+	//	4 of 4 candidates failed and stay ready, retried next tick; 0 released
+	//
+	// every thirty seconds, forever. The sweep reported failure on a healthy machine, and the machines
+	// those rows named were never handed back.
+	//
+	// THE NARROW TEST IS THE WHOLE POINT. `os.IsNotExist` on the allocation root is "there are no bytes",
+	// which is a fact about the past that no amount of retrying changes. A permission error, a busy disk
+	// or an unreadable file is NOT this branch: those are reasons to fail and try again, because the
+	// bytes may still be there. Releasing on those would be discarding a tenant's work to make a log line
+	// go away.
+	if _, statErr := os.Stat(c.HostPath); os.IsNotExist(statErr) {
+		log.Printf("idle release of workspace %s: %s is gone, so there is nothing to archive — the machine is "+
+			"handed back and this workspace can never be restored", c.WorkspaceID, c.HostPath)
+		if err := r.spine.AdvanceWorkspace(ctx, tenant, c.WorkspaceID, statemachines.WorkspaceCmdPause); err != nil {
+			return false, errors.Join(err, r.returnClaim(tenant, c.WorkspaceID))
+		}
+		r.releaseAccount(ctx, c)
+		return true, nil
+	}
+
 	// 3. Capture. Reason "idle" distinguishes this boundary from the "pause" one a run's own pause cuts:
 	// both are restorable, but only this one means "the machine was handed back".
 	snapshotID := "snap_" + randHex16()
@@ -269,12 +293,7 @@ func (r *IdleReleaser) release(ctx context.Context, c coordinator.IdleWorkspace)
 	// operator reconciles (palai-agentd down), and the machine's disk is the more urgent of the two
 	// residues. It is keyed by SESSION, which is the key SessionAccounts is defined on and the key Acquire
 	// was called with; an allocation id here would miss the map and destroy nothing while returning nil.
-	if r.accounts != nil {
-		if err := r.accounts.Release(ctx, c.SessionID); err != nil {
-			log.Printf("idle release of workspace %s: session %s account not released, its slot is held until an operator reconciles: %v",
-				c.WorkspaceID, c.SessionID, err)
-		}
-	}
+	r.releaseAccount(ctx, c)
 
 	removeErr := r.remove(c.HostPath)
 
@@ -603,5 +622,25 @@ func (r *IdleReleaser) Nudge() {
 	select {
 	case r.wake <- struct{}{}:
 	default:
+	}
+}
+
+// releaseAccount destroys the session account the allocation's tools ran under.
+//
+// A failure does not stop the release — the slot is held until an operator reconciles, and the
+// machine's disk is the more urgent of the two residues. It is keyed by SESSION, which is the key
+// SessionAccounts is defined on and the key Acquire was called with; an allocation id here would miss
+// the map and destroy nothing while returning nil.
+//
+// It is a method rather than an inline block because there are now TWO release paths — the ordinary one
+// and the one for an allocation whose bytes are already gone — and an account freed on only one of them
+// is a uid that outlives its session on exactly the path nobody watches.
+func (r *IdleReleaser) releaseAccount(ctx context.Context, c coordinator.IdleWorkspace) {
+	if r.accounts == nil {
+		return
+	}
+	if err := r.accounts.Release(ctx, c.SessionID); err != nil {
+		log.Printf("idle release of workspace %s: session %s account not released, its slot is held until an operator reconciles: %v",
+			c.WorkspaceID, c.SessionID, err)
 	}
 }

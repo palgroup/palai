@@ -80,3 +80,39 @@ func TestReleasingAWorkspaceTELLSTheSweep(t *testing.T) {
 			"on the one path the product sentence is about.")
 	}
 }
+
+// TestAWorkspaceWhoseBytesAreGoneIsRELEASEDAndNotRetriedForever — A POISON PILL, MEASURED.
+//
+// On the running stack on 2026-08-08 four workspaces named allocation directories that no longer
+// existed — a moved workspace root, an operator's cleanup — and every pass answered
+//
+//	4 of 4 candidates failed and stay ready, retried next tick; 0 released
+//
+// every thirty seconds, forever. The sweep reported failure on a healthy machine, and the machines
+// those rows named were never handed back.
+//
+// The narrow test is the whole point: `os.IsNotExist` is "there are no bytes", a fact about the past
+// that no amount of retrying changes. Anything else — permission, a busy disk — is a reason to fail and
+// try again, because the bytes may still be there, and releasing on those would discard a tenant's work
+// to make a log line go away. Both directions are asserted.
+func TestAWorkspaceWhoseBytesAreGoneIsRELEASEDAndNotRetriedForever(t *testing.T) {
+	if _, err := os.Stat("/nonexistent-palai-allocation"); !os.IsNotExist(err) {
+		t.Skip("this machine has a path that should not exist")
+	}
+	src, err := os.ReadFile("idle_release.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(src)
+
+	if !strings.Contains(body, "os.IsNotExist(statErr)") {
+		t.Error("the sweep has no branch for an allocation whose directory is gone: every pass will fail on " +
+			"it forever, and the machine it names is never handed back")
+	}
+	// AND THE ACCOUNT IS FREED ON BOTH PATHS. A uid that outlives its session on the path nobody watches
+	// is the leak the ordinary path exists to close.
+	if strings.Count(body, "r.releaseAccount(ctx, c)") < 2 {
+		t.Errorf("releaseAccount is called %d times, want both release paths — the ordinary one and the one "+
+			"for an allocation whose bytes are already gone", strings.Count(body, "r.releaseAccount(ctx, c)"))
+	}
+}
