@@ -856,6 +856,20 @@ func selfUpdate(installed *device.Installation) func(context.Context, string) (b
 			TargetVersion: target,
 			BaseURL:       installed.Config.ReleaseBaseURL,
 			InstallDir:    filepath.Dir(exe),
+			// ‼️ THE PRIVILEGED HALF, AND WITHOUT IT A VERSION MOVE MOVED NOTHING THAT MATTERS. The update
+			// replaces the payload copies beside this binary; the daemon launchd actually serves lives at
+			// macagent.InstalledBinaryPath and holds its image until the job is restarted. An operator who
+			// moved a device through the admin plane therefore got a NEW agent and the OLD daemon — and the
+			// daemon is what mints session accounts and starts their workers.
+			//
+			// installAgentd is the SAME path `palai agentd install` and `palai enroll` take, so a version
+			// move and a first enrolment cannot leave the machine in two different shapes. It elevates the
+			// way every privileged step here does — root, or passwordless sudo, or a refusal that names
+			// itself — which is what makes this work unattended on a rented Mac and say so on a laptop.
+			Privileged: func(ctx context.Context) error {
+				_, err := installAgentd(ctx, installedAllocationRoot())
+				return err
+			},
 		}.Apply(ctx, version.Resolve())
 	}
 }

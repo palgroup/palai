@@ -35,6 +35,13 @@ type SelfUpdate struct {
 	// InstallDir holds the binaries this machine runs. Both are replaced together: an agent at N+1 beside
 	// a daemon at N is a combination nobody tested.
 	InstallDir string
+	// Privileged is the step that puts the staged binaries where the SERVICE reads them and restarts the
+	// job — `palai agentd install` in production, nil on a machine that has no privileged half.
+	//
+	// ‼️ IT IS A SEAM AND NOT A CALL INTO macagent, because this package must not depend on the installer:
+	// packages/device is what a Linux box runs too, and there is no account daemon there. A nil hook is a
+	// machine with nothing privileged to move, not a machine that skipped it.
+	Privileged func(ctx context.Context) error
 	// Now, Client and Runner are seams. A test drives every path of this without a network, a release, or
 	// the right to write into /usr/local.
 	Client *http.Client
@@ -112,14 +119,36 @@ func (u SelfUpdate) Apply(ctx context.Context, currentVersion string) (bool, err
 			"one that was asked for, and the running binary is left in place", target, got)
 	}
 
-	// Both binaries move together, agent last: a daemon at N+1 under an agent at N is a pair that gets
-	// exercised for the seconds between two writes, and the agent's own replacement is what ends the
-	// process.
-	if daemon := filepath.Join(work, "palai-agentd"); fileExists(daemon) {
-		if err := replace(daemon, filepath.Join(u.InstallDir, "palai-agentd")); err != nil {
-			return false, fmt.Errorf("update to %s: %w", target, err)
+	// ‼️ EVERY BINARY THE ARCHIVE CARRIES, AND THE LIST USED TO BE ONE SHORT. palai-session-worker was
+	// added to the device archive after this function was written and never added here, so an updated
+	// Mac would have run its sessions' commands through a worker from the previous release — or, on a
+	// machine updating past the release that introduced it, through no worker at all.
+	for _, name := range []string{"palai-agentd", "palai-session-worker"} {
+		if payload := filepath.Join(work, name); fileExists(payload) {
+			if err := replace(payload, filepath.Join(u.InstallDir, name)); err != nil {
+				return false, fmt.Errorf("update to %s: %w", target, err)
+			}
 		}
 	}
+
+	// ‼️ AND THE PRIVILEGED HALF, WITHOUT WHICH THIS FUNCTION MOVED NOTHING THAT MATTERS. The lines above
+	// replace the PAYLOAD COPIES that sit beside the agent; the daemon launchd actually runs lives at
+	// macagent.InstalledBinaryPath and the job holds its image until it is restarted. So an operator who
+	// moved a device to a new version through the admin plane got a NEW agent and the OLD daemon still
+	// serving — and the daemon is the process that mints session accounts and starts their workers.
+	//
+	// It runs BEFORE the agent is replaced, because replacing the agent is what ends this process: a
+	// privileged step queued after it would never run. And a failure here FAILS THE UPDATE rather than
+	// being logged past, because a machine whose daemon did not move is not at the target version, and
+	// the admin plane must not be told it is.
+	if u.Privileged != nil {
+		if err := u.Privileged(ctx); err != nil {
+			return false, fmt.Errorf("update to %s: the binaries were staged but the privileged install did not "+
+				"run, so the daemon launchd is serving is still the previous one: %w", target, err)
+		}
+	}
+
+	// The agent LAST, and its own replacement is what ends the process.
 	if err := replace(staged, filepath.Join(u.InstallDir, "palai")); err != nil {
 		return false, fmt.Errorf("update to %s: %w", target, err)
 	}
