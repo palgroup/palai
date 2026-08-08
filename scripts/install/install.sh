@@ -143,6 +143,13 @@ main() {
 	if [ -f "$work/palai-agentd" ]; then
 		install_binary "$work/palai-agentd" "$PALAI_INSTALL_PREFIX/palai-agentd"
 	fi
+	# AND THE SESSION WORKER, ON THE SAME TERMS AND FOR A SHARPER REASON. The daemon mints the uid; the
+	# worker is the process that IS it. Without this member enrolment installs a daemon whose accounts
+	# are real and whose every shell command refuses — only uid 0 may become another uid, and the control
+	# plane is the operator. Placing the file is still not installing a service: enrolment does that.
+	if [ -f "$work/palai-session-worker" ]; then
+		install_binary "$work/palai-session-worker" "$PALAI_INSTALL_PREFIX/palai-session-worker"
+	fi
 
 	# ‼️ SET AFTER THE CALL ABOVE, AND THAT ORDER IS LOAD-BEARING. `install_binary` assigns `dest`
 	# itself and sh has no locals, so a call made while this variable held the agent's path rewrote it

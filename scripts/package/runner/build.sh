@@ -81,6 +81,21 @@ if [ "$OS" = "darwin" ]; then
 		go build -trimpath -buildvcs=false \
 		-ldflags="-s -w -buildid= -X github.com/palgroup/palai/packages/version.Stamp=${STAMP}" \
 		-o "$stage/palai-agentd" ./cmd/palai-agentd )
+
+	# ‼️ AND THE SESSION WORKER, WITHOUT WHICH THE DAEMON MINTS ACCOUNTS THAT CANNOT RUN ANYTHING. Only
+	# uid 0 may become another uid and the control plane is the operator, so the worker is the one
+	# process that is already the tenant; a machine with palai-agentd and no palai-session-worker has
+	# real accounts, adopted workspaces, and a shell tool that refuses every command.
+	#
+	# It rides THIS archive because the whole flow is two commands — install.sh, then `palai enroll` —
+	# and enrolment installs what it finds beside the binary. A worker that shipped some other way would
+	# be a manual step on a machine nobody logs into, which is the defect the daemon itself was carried
+	# here to remove.
+	echo "build: cross-compiling cmd/palai-session-worker (${OS}/${ARCH}) at ${STAMP}" >&2
+	( cd "$root" && CGO_ENABLED=0 GOOS="$OS" GOARCH="$ARCH" GOPROXY=off GOFLAGS=-mod=readonly \
+		go build -trimpath -buildvcs=false \
+		-ldflags="-s -w -buildid= -X github.com/palgroup/palai/packages/version.Stamp=${STAMP}" \
+		-o "$stage/palai-session-worker" ./cmd/palai-session-worker )
 fi
 
 # Stage the package members FLAT (no subdirs, so tar member order is fully controlled).

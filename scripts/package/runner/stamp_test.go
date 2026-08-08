@@ -171,6 +171,20 @@ func TestTheDarwinArchiveCarriesTheAccountsDaemonAndLinuxDoesNot(t *testing.T) {
 				t.Fatalf("the %s archive carries palai-agentd, which owns macOS session accounts and does "+
 					"nothing here", tc.os)
 			}
+			// ‼️ AND THE SESSION WORKER, ON THE SAME TWO-SIDED TERMS. The daemon mints the uid; the
+			// worker is the process that IS it. A darwin archive with palai-agentd and no
+			// palai-session-worker installs a machine whose accounts are real, whose workspaces are
+			// adopted, and whose every shell command refuses — only uid 0 may become another uid and the
+			// control plane is the operator. That is the exact state this tree was in until 2026-08-08,
+			// and it looks completely healthy from outside.
+			if got := members["palai-session-worker"]; got != tc.wants {
+				if tc.wants {
+					t.Fatalf("the %s archive carries no palai-session-worker: enrolment would install a daemon "+
+						"that mints session accounts and nothing that can RUN a command as one", tc.os)
+				}
+				t.Fatalf("the %s archive carries palai-session-worker, which is a macOS session account and "+
+					"does nothing here", tc.os)
+			}
 			// The device binary is in both, always: that is what install.sh places.
 			if !members["palai"] {
 				t.Fatalf("the %s archive has no `palai` member", tc.os)
@@ -201,7 +215,13 @@ func TestTheInstallerPlacesThePayloadAndLoadsNoService(t *testing.T) {
 		t.Fatal("install.sh no longer installs the `palai` member by name — this guard is reading a script " +
 			"that has changed shape, and everything it concludes below is about a file it does not understand")
 	}
-	// The payload has to land, or enrolment cannot finish on a machine nobody logs into.
+	// Both payload members have to land, or enrolment finishes into a machine that mints accounts and
+	// cannot run a command as one.
+	if !strings.Contains(script, `install_binary "$work/palai-session-worker"`) {
+		t.Error("install.sh does not place palai-session-worker: enrolment would install a daemon whose " +
+			"session accounts are real and whose every shell command refuses, which is a machine that " +
+			"looks completely healthy from outside")
+	}
 	if !strings.Contains(script, `install_binary "$work/palai-agentd"`) {
 		t.Error("install.sh does not place palai-agentd beside the agent: `palai enroll` looks for it there, " +
 			"so an unattended provision enrols a machine that cannot open a session account")
