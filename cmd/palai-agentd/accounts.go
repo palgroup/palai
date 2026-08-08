@@ -115,7 +115,8 @@ type SysadminctlAccounts struct {
 	// told about; this only relocates the filesystem side, and TestTheHomeOnDiskIsTheHomeInTheDirectory
 	// pins that the two agree in production.
 	usersRoot string
-	// chown is os.Chown in production. Only uid 0 may give a file to another uid, so this is the one
+	// chown is os.Lchown in production — NEVER os.Chown, which follows a symlink and would chown its
+	// TARGET; the trees this daemon walks are ones a model may already have written into. Only uid 0 may give a file to another uid, so this is the one
 	// filesystem call in this file a test cannot make — a field, for the same reason `run` is.
 	chown func(path string, uid, gid int) error
 	// sleep is time.Sleep in production. It is a field so a test can drive the shipped settle without
@@ -151,7 +152,7 @@ func NewSysadminctlAccounts(allocationRoot string) *SysadminctlAccounts {
 		ownerOf:        ownerOf,
 		lookupUser:     lookupUserName,
 		usersRoot:      darwinUsersRoot,
-		chown:          os.Chown,
+		chown:          os.Lchown,
 		sleep:          time.Sleep,
 	}
 }

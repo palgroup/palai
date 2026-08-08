@@ -412,3 +412,61 @@ func declaredAsConst(t *testing.T, dir, name string) bool {
 // asError is errors.As with the daemon's classed error, kept local so the assertion above reads as one
 // line.
 func asError(err error, target **macagent.Error) bool { return errors.As(err, target) }
+
+// TestSpawnPreparesTheSlotDirectoryItStartsTheWorkerIn — ORDER, NOT OWNERSHIP.
+//
+// Spawn happens at Acquire, the moment a session gets its account; adopt happens later, when a workspace
+// has been planned. A worker started before adopt found the slot directory at whatever mode its creator
+// left, and `fork/exec` reports `permission denied` when the CHILD cannot enter its own working
+// directory — measured on a real Mac on 2026-08-08 against a 0710 directory whose group the account
+// holds, because x alone is not enough to bind a socket in.
+//
+// The owner is deliberately NOT moved: the control plane created this directory and reaches it by
+// ownership, which is the half no group list can take away.
+func TestSpawnPreparesTheSlotDirectoryItStartsTheWorkerIn(t *testing.T) {
+	const slot = 7
+	rec := ourRecord(slot)
+	accounts := newTestAccounts(t, rec)
+	accounts.allocationRoot = t.TempDir()
+
+	var gave []string
+	accounts.chown = func(path string, uid, gid int) error {
+		gave = append(gave, filepath.Base(path)+" -> uid:"+strconv.Itoa(uid)+" gid:"+strconv.Itoa(gid))
+		return nil
+	}
+	var started sessionWorker
+	accounts.spawn = func(_ context.Context, w sessionWorker) (int, error) { started = w; return 4242, nil }
+	worker := filepath.Join(t.TempDir(), "palai-session-worker")
+	if err := os.WriteFile(worker, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	accounts.workerPath = worker
+
+	if _, _, err := accounts.Spawn(context.Background(), slot); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	slotDir := filepath.Join(accounts.allocationRoot, SlotDirName(slot))
+	fi, err := os.Stat(slotDir)
+	if err != nil || !fi.IsDir() {
+		t.Fatalf("%s was not created, so the worker had nowhere to start: %v", slotDir, err)
+	}
+	if got := fi.Mode().Perm(); got != slotRootMode {
+		t.Errorf("%s is mode %04o, want %04o — the group needs w to bind the worker's socket, and the child "+
+			"needs x to enter its own working directory", slotDir, got, slotRootMode)
+	}
+	want := SlotDirName(slot) + " -> uid:-1 gid:807"
+	found := false
+	for _, g := range gave {
+		if g == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("ownership calls were %v, want %q — the group moves and the OWNER does not, because the "+
+			"control plane reaches this directory by owning it", gave, want)
+	}
+	if started.Dir != slotDir {
+		t.Errorf("the worker was started in %q, want the slot directory %q", started.Dir, slotDir)
+	}
+}

@@ -152,6 +152,28 @@ func (a *SysadminctlAccounts) Spawn(ctx context.Context, slot int) (string, int,
 			"this daemon was installed with no allocation root, so a session worker has nowhere to listen — reinstall it with -allocation-root")
 	}
 	slotDir := filepath.Join(a.allocationRoot, SlotDirName(slot))
+	// ‼️ THE DIRECTORY IS PREPARED HERE AND NOT LEFT TO adopt, BECAUSE OF WHEN EACH ONE RUNS. Spawn
+	// happens at Acquire — the moment the session gets its account — and adopt happens later, when a
+	// workspace has been planned. A worker started before adopt found the slot directory at the mode
+	// whoever created it left, and `fork/exec` reports `permission denied` when the CHILD cannot enter
+	// its own working directory: measured on a real Mac on 2026-08-08 against a 0710 directory whose
+	// group the account holds but whose x-only bit is not enough to bind a socket in.
+	//
+	// Both verbs now leave the same three facts — owner untouched, group the slot's, mode slotRootMode —
+	// so whichever runs first is enough and the second is a no-op. The owner is deliberately NOT set: the
+	// control plane created this directory and reaches it by ownership, which is the half no group list
+	// can take away.
+	if err := os.MkdirAll(slotDir, slotRootMode); err != nil {
+		return "", 0, macagent.Errorf(macagent.ClassInternal, "create %s: %v", slotDir, err)
+	}
+	// Through the same seam Create's handover uses: only uid 0 may do this, so it is the one filesystem
+	// call here a test cannot make.
+	if err := a.chown(slotDir, -1, gid); err != nil {
+		return "", 0, macagent.Errorf(macagent.ClassInternal, "give %s to gid %d: %v", slotDir, gid, err)
+	}
+	if err := os.Chmod(slotDir, slotRootMode); err != nil {
+		return "", 0, macagent.Errorf(macagent.ClassInternal, "set the mode of %s: %v", slotDir, err)
+	}
 	pid, err := a.spawn(ctx, sessionWorker{
 		Path: a.workerPath,
 		UID:  uid,
